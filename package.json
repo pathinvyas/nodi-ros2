@@ -4,11 +4,9 @@
   "private": true,
   "description": "A game-like ROS 2 course in one web page, with physics simulators of four real robots.",
   "license": "MIT",
-  "engines": {
-    "node": ">=18"
-  },
+  "engines": { "node": ">=18" },
   "scripts": {
     "build": "python3 build.py",
-    "test": "node tests/content.test.js && node tests/physics.test.js && node tests/robots.test.js && node tests/library.test.js"
+    "test": "node tests/content.test.js && node tests/physics.test.js && node tests/robots.test.js"
   }
 }

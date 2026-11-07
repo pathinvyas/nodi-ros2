@@ -102,9 +102,6 @@ const ICONS = {
   sparkle: '<path d="M12 2.5l2 5.7 5.8 2-5.8 2L12 18l-2-5.8-5.8-2 5.8-2z" fill="currentColor" stroke="none"/><path d="M19 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="currentColor" stroke="none"/>',
   warn: '<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.2M12 17.2v.1"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
-  minus: '<path d="M5 12h14"/>',
-  toc: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.2"/><circle cx="4.5" cy="12" r="1.2"/><circle cx="4.5" cy="18" r="1.2"/>',
-  external: '<path d="M14 4h6v6M20 4l-8.5 8.5"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/>',
   stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor" stroke="none"/>',
   send: '<path d="M4 12l16-8-6 16-2.6-6.4z"/>',
   usb: '<path d="M12 3v13.5M9.2 5.8L12 3l2.8 2.8M7.5 10.5v2.2H12M16.5 8.5v4.2H12"/><circle cx="12" cy="18.8" r="2"/>',
@@ -221,7 +218,6 @@ function freshState() {
     settings: { sound: true, voice: false, unlimited: false, unlockAll: false },
     lab: { missions: {}, code: null, tpl: 'avoid', hist: [] },
     sno: { m: {}, code: {}, tpl: {}, actions: {}, hist: [] },
-    lib: { pos: {} },
   };
 }
 function migrate(o) {
@@ -232,7 +228,6 @@ function migrate(o) {
   s.settings = Object.assign(freshState().settings, o.settings || {});
   s.lab = Object.assign(freshState().lab, o.lab || {});
   s.sno = Object.assign(freshState().sno, o.sno || {});
-  s.lib = Object.assign(freshState().lib, o.lib || {});
   if (!Array.isArray(s.mistakes)) s.mistakes = [];
   return s;
 }

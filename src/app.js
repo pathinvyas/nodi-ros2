@@ -1,6 +1,6 @@
 /* ============================== app shell & views ============================== */
-const VIEWS = ['learn', 'lab', 'snobots', 'snobots-ainex', 'snobots-r1', 'snobots-limo', 'snobots-cobot', 'practice', 'notebook', 'library', 'ask', 'profile'];
-const NAV = [['learn', 'learn', 'Learn'], ['lab', 'lab', 'Robot Lab'], ['snobots', 'snobots', 'SnoBots Robots'], ['practice', 'practice', 'Practice'], ['notebook', 'notebook', 'Notebook'], ['library', 'book', 'Library'], ['ask', 'ask', 'Ask Nodi'], ['profile', 'profile', 'Profile']];
+const VIEWS = ['learn', 'lab', 'snobots', 'snobots-ainex', 'snobots-r1', 'snobots-limo', 'snobots-cobot', 'practice', 'notebook', 'ask', 'profile'];
+const NAV = [['learn', 'learn', 'Learn'], ['lab', 'lab', 'Robot Lab'], ['snobots', 'snobots', 'SnoBots Robots'], ['practice', 'practice', 'Practice'], ['notebook', 'notebook', 'Notebook'], ['ask', 'ask', 'Ask Nodi'], ['profile', 'profile', 'Profile']];
 const OFFS = [0, 46, 70, 46, 0, -46, -70, -46];
 
 const App = {
@@ -29,7 +29,6 @@ const App = {
   },
   go(v, fromHash) {
     if (v === 'ask' && !Ask.available) v = 'learn';
-    if (Reader.el) Reader.close();
     if (this.view === 'lab' && v !== 'lab') Lab.unmount();
     if (this.view.startsWith('snobots-') && v !== this.view) SnoUI.unmount();
     this.view = v;
@@ -50,7 +49,6 @@ const App = {
     else if (v.startsWith('snobots-')) { if (!SnoUI.cur || SnoUI.cur.id !== v.slice(8) || SnoUI.root !== el) SnoUI.mount(el, v.slice(8)); }
     else if (v === 'practice') renderPractice(el);
     else if (v === 'notebook') renderNotebook(el);
-    else if (v === 'library') renderLibrary(el);
     else if (v === 'ask') renderAsk(el);
     else if (v === 'profile') renderProfile(el);
     this.renderStats(); this.renderAside();
