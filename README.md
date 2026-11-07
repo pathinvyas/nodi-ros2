@@ -15,7 +15,7 @@ A game-like ROS 2 course that runs entirely in the browser, in a single web page
 | **Learn** | 12 units, 26 lessons and 153 exercises on ROS 2 Jazzy: the command line, publishers and subscribers, services, custom interfaces, parameters, launch files and TF2, in Python and C++, ending with a driver node for a microcontroller. Lessons are short animated scenes followed by a mix of exercise types (multiple choice, fill in the code, spot the bug, order the steps, drive the turtle). |
 | **Robot Lab** | A 2D robot with a live ROS 2 graph. Use `ros2 topic echo`, `ros2 param set` and friends in the terminal, or write Python nodes with an rclpy-style API. Python runs in your browser through Pyodide. |
 | **SnoBots Robots** | Physics simulators of a Hiwonder AiNex (24-joint small humanoid), a Unitree R1 (humanoid), an AgileX LIMO (four wheel modes) and a LIMO Cobot (LIMO with a 6-axis arm). Each has missions, a terminal, a Python code tab and a live topic graph. |
-| **Library** | Books and guides to read inside the app. It has a PDF reader with a contents panel, zoom, selectable text and a saved place in every book. Readers can also open their own PDFs, which stay in their browser. |
+| **Library** | Books and guides to read inside the app. It has a PDF reader with search (every match highlighted on the page, plus a results list), a contents panel, zoom, selectable text and a saved place in every book. Readers can also open their own PDFs, which stay in their browser. |
 | **Practice, Notebook, Profile** | Review rounds, unit notes, XP, streaks and badges. Progress is saved in the browser. |
 
 ![AiNex walking with contact forces and centre of mass shown](docs/screenshots/ainex-physics.jpg)
