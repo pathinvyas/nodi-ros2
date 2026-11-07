@@ -50,7 +50,8 @@
 
 /* ------------------------------ reader ------------------------------ */
 body.reader-open { overflow: hidden; }
-.reader { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--reader-bg); animation: fadein .16s ease-out; }
+.reader { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-rows: auto auto minmax(0, 1fr); background: var(--reader-bg); animation: fadein .16s ease-out; }
+.reader-top { grid-row: 1; } .reader-find { grid-row: 2; } .reader-body { grid-row: 3; }
 .reader-top { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 14px; background: var(--surface); border-bottom: 2px solid var(--line); }
 .reader-title { flex: 1; min-width: 0; display: grid; }
 .reader-title b { font: 600 17px/1.25 var(--font-display); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -69,18 +70,37 @@ body.reader-open { overflow: hidden; }
 .reader-msg { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; color: var(--ink-2); }
 .reader-msg .nodi { width: 96px; height: auto; }
 .reader-msg p { margin: 0; max-width: 32em; }
-.reader-toc { position: absolute; top: 0; right: 0; bottom: 0; z-index: 3; width: min(380px, 90vw); overflow-y: auto; overscroll-behavior: contain; background: var(--surface); border-left: 2px solid var(--line); box-shadow: var(--shadow-2); }
-.reader-toc[hidden] { display: none; }
-.reader-toc-h { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 10px 10px 18px; background: var(--surface); border-bottom: 2px solid var(--line); }
-.reader-toc-h b { font: 600 17px/1.2 var(--font-display); }
-.reader-toc ol { list-style: none; margin: 0; padding: 8px; }
-.reader-toc ol ol { padding: 0 0 6px 14px; }
-.reader-toc ol button { display: flex; justify-content: space-between; gap: 14px; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: none; color: var(--ink); font: 500 14.5px/1.35 var(--font-body); text-align: left; cursor: pointer; }
-.reader-toc ol ol button { color: var(--ink-2); font-size: 13.5px; font-weight: 400; }
-.reader-toc ol button:hover, .reader-toc ol button:focus-visible { background: var(--surface-2); outline: none; }
-.reader-toc .tabnum { flex: none; color: var(--muted); }
+.reader-drawer { position: absolute; top: 0; right: 0; bottom: 0; z-index: 3; width: min(400px, 90vw); overflow-y: auto; overscroll-behavior: contain; background: var(--surface); border-left: 2px solid var(--line); box-shadow: var(--shadow-2); }
+.reader-drawer[hidden] { display: none; }
+.reader-drawer-h { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 10px 10px 18px; background: var(--surface); border-bottom: 2px solid var(--line); }
+.reader-drawer-h b { font: 600 17px/1.2 var(--font-display); }
+.reader-drawer ol { list-style: none; margin: 0; padding: 8px; }
+.reader-drawer ol ol { padding: 0 0 6px 14px; }
+.reader-drawer ol button { display: flex; justify-content: space-between; gap: 14px; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: none; color: var(--ink); font: 500 14.5px/1.35 var(--font-body); text-align: left; cursor: pointer; }
+.reader-drawer ol ol button { color: var(--ink-2); font-size: 13.5px; font-weight: 400; }
+.reader-drawer ol button:hover, .reader-drawer ol button:focus-visible { background: var(--surface-2); outline: none; }
+.reader-drawer .tabnum { flex: none; color: var(--muted); }
+/* search */
+.reader-find { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 8px 14px; background: var(--surface); border-bottom: 2px solid var(--line); }
+.reader-find[hidden] { display: none; }
+.reader-find-box { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 2px solid var(--line); border-radius: 12px; background: var(--surface); }
+.reader-find-box:focus-within { border-color: var(--accent); }
+.reader-find-box .ico { flex: none; width: 18px; height: 18px; color: var(--muted); }
+.reader-find-box input { flex: 1; min-width: 0; min-height: 38px; border: 0; outline: none; background: transparent; color: var(--ink); font: inherit; }
+.reader-find-box input::-webkit-search-cancel-button { display: none; }
+.reader-find-n { flex: none; min-width: 5.5em; text-align: center; color: var(--muted); font-size: 13.5px; }
+.reader-find-n.none { color: var(--bad); }
+.reader-find .icon-btn[disabled] { opacity: .35; pointer-events: none; }
+.reader-find [data-a="hits"] .ico { width: 18px; height: 18px; }
+.reader-hits-n { margin: 10px 18px 0; color: var(--muted); font-size: 13.5px; }
+.reader-hits ol button { justify-content: flex-start; align-items: baseline; gap: 10px; font-weight: 400; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); }
+.reader-hits ol button.on { background: var(--accent-soft); color: var(--ink); }
+.reader-hits .hit-p { min-width: 3.4em; font-weight: 600; color: var(--muted); }
+.reader-hits .hit-t { overflow-wrap: anywhere; }
+.reader-hits mark { padding: 0 1px; border-radius: 3px; background: #FFD84D; color: #1A1A1A; }
 @media (max-width: 680px) {
   .reader-top { gap: 6px; padding: 8px; }
+  .reader-find { gap: 2px; padding: 6px 8px; } .reader-find [data-a="hits"] span { display: none; } .reader-find-n { min-width: 4.2em; font-size: 12.5px; }
   .reader-title span, .reader-zoom .btn { display: none; }
   .reader-pg input { width: 3.2em; }
 }
@@ -94,3 +114,6 @@ body.reader-open { overflow: hidden; }
 .textLayer br::selection { background: transparent; }
 .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; -webkit-user-select: none; user-select: none; }
 .textLayer .endOfContent.active { top: 0; }
+/* search matches: every match on the page in yellow, the current one in orange */
+.textLayer .highlight { margin: -1px; padding: 1px; border-radius: 3px; background: rgba(255, 205, 40, .45); }
+.textLayer .highlight.selected { background: rgba(255, 112, 0, .5); box-shadow: 0 0 0 2px rgba(255, 112, 0, .35); }
