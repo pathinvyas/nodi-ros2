@@ -1,0 +1,96 @@
+/* ============================== Library ============================== */
+:root { --reader-bg: #D5DDD9; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --reader-bg: #070D0B; } }
+:root[data-theme="dark"] { --reader-bg: #070D0B; }
+
+.lib-shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 430px), 1fr)); gap: 16px; margin: 4px 0 28px; }
+.lib-book { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 18px; align-items: start; padding: 18px; }
+.lib-cover { position: relative; width: 128px; aspect-ratio: 3 / 4; border-radius: 5px 10px 10px 5px; overflow: hidden; background: var(--b);
+  box-shadow: 0 12px 24px rgba(16, 32, 25, .2), 0 2px 5px rgba(16, 32, 25, .14); }
+.lib-cover::after { content: ''; position: absolute; inset: 0 auto 0 0; width: 8px; background: linear-gradient(90deg, rgba(0, 0, 0, .28), rgba(255, 255, 255, .1) 70%, transparent); }
+.lib-cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.lib-cover-css { display: flex; flex-direction: column; padding: 14px 12px 12px 18px; color: #fff;
+  background: linear-gradient(165deg, color-mix(in srgb, var(--b) 78%, #fff) 0%, var(--b) 48%, color-mix(in srgb, var(--b) 72%, #000) 100%); }
+.lib-cover-css .k { font: 600 9px/1 var(--font-body); letter-spacing: .14em; text-transform: uppercase; opacity: .82; }
+.lib-cover-css b { font: 600 15px/1.14 var(--font-display); margin-top: 10px; overflow-wrap: break-word; hyphens: auto; }
+.lib-cover-css .e { font-size: 10.5px; line-height: 1.3; opacity: .86; margin-top: 7px; }
+.lib-cover-css .p { margin-top: auto; font: 600 8.5px/1.2 var(--font-body); letter-spacing: .12em; text-transform: uppercase; opacity: .75; }
+.lib-info { min-width: 0; }
+.lib-info h3 { font-size: 20px; }
+.lib-sub { margin: 4px 0 0; color: var(--ink-2); font-size: 14.5px; line-height: 1.4; }
+.lib-by { margin: 4px 0 0; color: var(--muted); font-size: 13.5px; }
+.lib-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.lib-tags .chip { font-size: 12px; padding: 4px 10px; }
+.lib-blurb { margin: 10px 0 0; color: var(--ink-2); font-size: 14.5px; line-height: 1.5; }
+.lib-meta { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+.lib-note { display: flex; gap: 9px; align-items: flex-start; margin: 12px 0 0; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); color: var(--ink-2); font-size: 13.5px; line-height: 1.45; }
+.lib-note .ico { flex: none; width: 18px; height: 18px; margin-top: 1px; color: var(--muted); }
+.lib-prog { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 13px; }
+.lib-prog .bar { flex: 1; height: 8px; border-radius: 99px; background: var(--surface-3); overflow: hidden; }
+.lib-prog .bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.lib-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.lib-actions .btn .ico { width: 18px; height: 18px; }
+.lib-actions a.btn { text-decoration: none; }
+.lib-h2 h2 { display: flex; align-items: center; gap: 8px; font-size: 20px; }
+.lib-h2 h2 .ico { width: 24px; height: 24px; color: var(--muted); }
+.lib-h2 .sub { margin: 4px 0 12px; }
+.lib-add { display: grid; place-content: center; justify-items: center; gap: 4px; min-height: 168px; padding: 20px; border: 2px dashed var(--line); border-radius: 18px;
+  background: transparent; color: var(--muted); font: inherit; cursor: pointer; transition: border-color .15s, background .15s, color .15s; }
+.lib-add:hover, .lib-add.over, .lib-add:focus-visible { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.lib-add .ico { width: 30px; height: 30px; }
+.lib-add b { color: var(--ink); font: 600 16px/1.2 var(--font-display); }
+.lib-add span { font-size: 13px; }
+@media (max-width: 560px) {
+  .lib-book { grid-template-columns: 92px minmax(0, 1fr); gap: 14px; padding: 14px; }
+  .lib-cover { width: 92px; }
+  .lib-cover-css { padding: 9px 7px 8px 13px; } .lib-cover-css .k { font-size: 7.5px; } .lib-cover-css b { font-size: 10.5px; margin-top: 6px; } .lib-cover-css .e { display: none; } .lib-cover-css .p { font-size: 7px; }
+  .lib-info h3 { font-size: 17px; }
+  .lib-blurb { display: none; }
+}
+
+/* ------------------------------ reader ------------------------------ */
+body.reader-open { overflow: hidden; }
+.reader { position: fixed; inset: 0; z-index: 60; display: grid; grid-template-rows: auto minmax(0, 1fr); background: var(--reader-bg); animation: fadein .16s ease-out; }
+.reader-top { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px 14px; background: var(--surface); border-bottom: 2px solid var(--line); }
+.reader-title { flex: 1; min-width: 0; display: grid; }
+.reader-title b { font: 600 17px/1.25 var(--font-display); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reader-title span { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reader-tools { display: flex; align-items: center; gap: 6px; flex: none; }
+.reader-pg { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 14px; }
+.reader-pg input { width: 3.8em; min-height: 36px; padding: 0 4px; border: 2px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font: inherit; text-align: center; -moz-appearance: textfield; appearance: textfield; }
+.reader-pg input::-webkit-inner-spin-button, .reader-pg input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.reader-pg input:focus-visible { outline: none; border-color: var(--accent); }
+.reader-zoom { display: inline-flex; align-items: center; gap: 2px; }
+.reader-zoom .btn { min-height: 36px; padding: 0 10px; box-shadow: none; }
+.reader-body { position: relative; overflow: auto; overscroll-behavior: contain; outline: none; }
+.reader-pages { box-sizing: border-box; width: max-content; min-width: 100%; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 16px 8px 56px; }
+.reader-page { position: relative; flex: none; width: var(--pw, 600px); background: #fff; border-radius: 2px; overflow: hidden; box-shadow: 0 1px 3px rgba(0, 0, 0, .22), 0 10px 26px rgba(0, 0, 0, .14); }
+.reader-page canvas { display: block; }
+.reader-msg { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 24px; text-align: center; color: var(--ink-2); }
+.reader-msg .nodi { width: 96px; height: auto; }
+.reader-msg p { margin: 0; max-width: 32em; }
+.reader-toc { position: absolute; top: 0; right: 0; bottom: 0; z-index: 3; width: min(380px, 90vw); overflow-y: auto; overscroll-behavior: contain; background: var(--surface); border-left: 2px solid var(--line); box-shadow: var(--shadow-2); }
+.reader-toc[hidden] { display: none; }
+.reader-toc-h { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 10px 10px 18px; background: var(--surface); border-bottom: 2px solid var(--line); }
+.reader-toc-h b { font: 600 17px/1.2 var(--font-display); }
+.reader-toc ol { list-style: none; margin: 0; padding: 8px; }
+.reader-toc ol ol { padding: 0 0 6px 14px; }
+.reader-toc ol button { display: flex; justify-content: space-between; gap: 14px; width: 100%; padding: 8px 10px; border: 0; border-radius: 10px; background: none; color: var(--ink); font: 500 14.5px/1.35 var(--font-body); text-align: left; cursor: pointer; }
+.reader-toc ol ol button { color: var(--ink-2); font-size: 13.5px; font-weight: 400; }
+.reader-toc ol button:hover, .reader-toc ol button:focus-visible { background: var(--surface-2); outline: none; }
+.reader-toc .tabnum { flex: none; color: var(--muted); }
+@media (max-width: 680px) {
+  .reader-top { gap: 6px; padding: 8px; }
+  .reader-title span, .reader-zoom .btn { display: none; }
+  .reader-pg input { width: 3.2em; }
+}
+@media (max-width: 420px) { .reader-zoom { display: none; } }
+
+/* PDF.js text layer: invisible text laid over each page so words can be selected, copied and found */
+.textLayer { position: absolute; inset: 0; z-index: 2; overflow: hidden; line-height: 1; text-align: initial; transform-origin: 0 0; -webkit-text-size-adjust: none; text-size-adjust: none; forced-color-adjust: none; }
+.textLayer :is(span, br) { position: absolute; color: transparent; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.textLayer span.markedContent { top: 0; height: 0; }
+.textLayer ::selection { background: rgba(44, 116, 224, .32); }
+.textLayer br::selection { background: transparent; }
+.textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; -webkit-user-select: none; user-select: none; }
+.textLayer .endOfContent.active { top: 0; }

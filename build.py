@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Inline all sources into one self-contained HTML page: dist/index.html"""
-import pathlib, sys
-SRC = pathlib.Path(__file__).parent / 'src'
-OUT = pathlib.Path(__file__).parent / 'dist' / 'index.html'
+import base64, pathlib, re, shutil, sys
+ROOT = pathlib.Path(__file__).parent
+SRC = ROOT / 'src'
+LIB = ROOT / 'library'
+OUT = ROOT / 'dist' / 'index.html'
 read = lambda n: (SRC / n).read_text(encoding='utf-8')
-js = '\n'.join(read(n) for n in ['core.js', 'anim.js', 'content1.js', 'content2.js', 'lesson.js', 'lab.js', 'sno_kin.js', 'sno_phys.js', 'sno_walk.js', 'sno_core.js', 'sno_humanoid.js', 'sno_robots.js', 'sno_car.js', 'sno_defs.js', 'app.js']) + '\nApp.init();\n'
-css = read('styles.css') + '\n' + read('sno.css')
+js = '\n'.join(read(n) for n in ['core.js', 'anim.js', 'content1.js', 'content2.js', 'lesson.js', 'lab.js', 'sno_kin.js', 'sno_phys.js', 'sno_walk.js', 'sno_core.js', 'sno_humanoid.js', 'sno_robots.js', 'sno_car.js', 'sno_defs.js', 'library.js', 'app.js']) + '\nApp.init();\n'
+css = read('styles.css') + '\n' + read('sno.css') + '\n' + read('library.css')
+# Library covers are inlined as data URIs; the PDFs themselves are copied next to index.html (dist/library/)
+def cover(m):
+    f = LIB / 'covers' / m.group(1)
+    if not f.is_file(): sys.exit(f'missing library cover {f}')
+    return 'data:image/jpeg;base64,' + base64.b64encode(f.read_bytes()).decode()
+js = re.sub(r'LIBCOVER:([\w.-]+)', cover, js)
 for part, name in [(js, 'js'), (read('pyworker.js'), 'worker'), (read('pyshim.py'), 'shim'), (css, 'css')]:
     if '</script' in part.lower() or '</style' in part.lower():
         sys.exit(f'closing tag found inside {name}')
@@ -40,4 +48,8 @@ html = f'''<!DOCTYPE html>
 '''
 OUT.parent.mkdir(exist_ok=True)
 OUT.write_text(html, encoding='utf-8')
-print(f'wrote {OUT} ({len(html)/1024:.0f} KB)')
+books = sorted(LIB.glob('*.pdf')) if LIB.is_dir() else []
+if books:
+    (OUT.parent / 'library').mkdir(exist_ok=True)
+    for f in books: shutil.copyfile(f, OUT.parent / 'library' / f.name)
+print(f'wrote {OUT} ({len(html)/1024:.0f} KB) and {len(books)} library PDF(s)')
