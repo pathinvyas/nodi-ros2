@@ -156,3 +156,73 @@ label.mini select { max-width: 260px; font: 12.5px var(--font-mono); }
 .phys-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12.5px;color:var(--muted);margin:6px 0 2px}
 .phys-legend i{display:inline-block;width:12px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
 @media (max-width:560px){.sno-phys .phys-stats{grid-template-columns:repeat(2,1fr)}}
+
+/* broken-robot missions (Fix it tab) */
+.fix { display: grid; gap: 14px; align-content: start; }
+.fix :not(pre) > code { white-space: normal; overflow-wrap: anywhere; }
+.fix h3 { font-size: 19px; display: flex; align-items: center; gap: 8px; }
+.fix h3 .ico { width: 22px; height: 22px; color: var(--bad); flex: none; }
+.fix h4 { font-size: 15px; margin: 0 0 6px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.fix h4 span { font: 400 12.5px var(--font-body); color: var(--muted); }
+.fix p { margin: 0; line-height: 1.55; font-size: 14px; color: var(--ink-2); }
+.fix .sub { font-size: 13px; color: var(--muted); }
+.fix-intro { display: grid; gap: 8px; }
+.fix-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.fix-card { width: 100%; display: grid; gap: 5px; text-align: left; border: 2px solid var(--line); border-radius: 14px; padding: 11px 13px; background: var(--surface); color: var(--ink); font: inherit; box-shadow: 0 3px 0 var(--line); transition: border-color .12s, transform .12s; }
+.fix-card:hover { border-color: var(--bad); transform: translateY(-1px); }
+.fix-card:focus-visible { outline: 3px solid var(--c-srv); outline-offset: 2px; }
+.fix-card b { font: 600 16px var(--font-display); }
+.fix-card .fix-q { font-size: 13px; color: var(--muted); line-height: 1.45; }
+.fix-card-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.fix-card .xp { margin-left: auto; font: 700 13px var(--font-display); color: var(--c-msg); white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.fix-card.done { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+.fix-card.done .xp { color: var(--good); }
+.fix-card .xp .ico { width: 15px; height: 15px; }
+.fix-skills { display: flex; gap: 5px; flex-wrap: wrap; min-width: 0; }
+.fix .chip { padding: 2px 9px; font-size: 11.5px; }
+.fix-lvl { display: inline-flex; gap: 3px; vertical-align: middle; flex: none; }
+.fix-lvl i { width: 8px; height: 8px; border-radius: 50%; background: var(--surface-3); }
+.fix-lvl i.on { background: var(--bad); }
+.fix-head { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+.fix-head .grow { flex: 1 1 220px; min-width: 0; display: grid; gap: 4px; }
+.fix-kick { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font: 600 12px var(--font-body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.fix-kick .chip { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.fix-acts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.fix-report { margin: 0; border-left: 4px solid var(--bad); background: var(--surface-2); border-radius: 0 12px 12px 0; padding: 10px 14px; display: grid; gap: 6px; }
+.fix-report p { color: var(--ink); font-size: 14.5px; }
+.fix-report cite { font: italic 12.5px var(--font-body); color: var(--muted); }
+.fix-go { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.fix-goal, .fix-hints { border: 2px solid var(--line); border-radius: 14px; padding: 11px 13px; display: grid; gap: 6px; }
+.fix-checks { list-style: none; margin: 2px 0 0; padding: 0; display: grid; gap: 5px; }
+.fix-checks li { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; color: var(--ink-2); line-height: 1.4; }
+.fix-checks li .ico { width: 18px; height: 18px; flex: none; color: var(--muted); margin-top: 1px; }
+.fix-checks li.ok { color: var(--ink); }
+.fix-checks li.ok .ico { color: var(--good); }
+.fix-note { background: var(--c-msg-soft); border-radius: 10px; padding: 7px 10px; }
+.fix-note[hidden] { display: none; }
+.fix-logbox { background: var(--term-bg); color: var(--term-ink); font: 12px/1.5 var(--font-mono); border: 1px solid #22332C; border-radius: 12px; padding: 8px 11px; max-height: 230px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.fix-logbox:focus-visible { outline: 3px solid var(--c-srv); outline-offset: 2px; }
+.fix-logbox .w { color: var(--term-yellow); }
+.fix-logbox .e { color: var(--term-red); }
+.fix-logbox .d { color: var(--term-dim); }
+.fix-hints ol { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; line-height: 1.5; color: var(--ink-2); }
+.fix-sol { background: var(--surface-2); border-radius: 10px; padding: 7px 10px; }
+.fix-cmd { cursor: pointer; transition: border-color .12s, background .12s; }
+.fix-cmd:hover, .fix-cmd:focus-visible { border-color: var(--c-node) !important; background: var(--c-node-soft) !important; outline: none; }
+.fix-done { border: 2px solid var(--good); background: var(--good-soft); border-radius: 14px; padding: 11px 13px; display: grid; gap: 6px; }
+.fix-done-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font: 600 16px var(--font-display); color: var(--good); }
+.fix-done-h .ico { width: 20px; height: 20px; }
+.fix-done-h span { font: 400 13px var(--font-body); color: var(--muted); }
+.fix-done h4 { margin-top: 2px; }
+.fix-done p { color: var(--ink); }
+.fix-strip { background: var(--term-bar); color: var(--term-ink); border-bottom: 1px solid #22332C; }
+.fix-strip-h { display: flex; align-items: center; gap: 8px; padding: 6px 10px 0 12px; font: 13px var(--font-body); min-width: 0; }
+.fix-strip-h .ico { width: 16px; height: 16px; color: var(--term-red); flex: none; }
+.fix-strip-h b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.fix-strip-st { color: var(--term-dim); font-size: 12px; white-space: nowrap; margin-right: auto; }
+.fix-strip-h .btn { --fg: var(--term-ink); min-height: 28px; flex: none; }
+.fix-strip.ok .fix-strip-h .ico, .fix-strip.ok .fix-strip-st { color: var(--term-green); }
+.fix-strip .fix-logbox { background: transparent; border: 0; border-radius: 0; max-height: 72px; padding: 4px 12px 7px; font-size: 11.5px; }
+.mission-bar .fix-lvl { margin-left: 6px; vertical-align: 2px; }
+.mission-bar .fix-last { font: 11.5px/1.4 var(--font-mono); color: var(--warn); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mission-bar .fix-last[hidden] { display: none; }

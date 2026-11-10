@@ -299,7 +299,7 @@ class TiltWatch(Node):
   limo: {
     id: 'limo', name: 'LIMO', maker: 'AgileX', catLabel: 'Autonomous car', color: '#30A46C', hz: 60, cams: true, mSlam: 'm5',
     blurb: 'A small ROS car with four motion modes, lidar and a depth camera. Map the city table, navigate, follow lanes and stop at red lights.',
-    chipsHub: ['4 motion modes', 'lidar + SLAM', 'navigation'], tabs: [['control', 'drive', 'Control'], ['phys', 'chip', 'Physics'], ['term', 'terminal', 'Terminal'], ['code', 'code', 'Code'], ['topics', 'topics', 'Topics'], ['missions', 'flag', 'Missions'], ['info', 'book', 'Info']],
+    chipsHub: ['4 motion modes', 'lidar + SLAM', 'fix-it tickets'], tabs: [['control', 'drive', 'Control'], ['phys', 'chip', 'Physics'], ['term', 'terminal', 'Terminal'], ['code', 'code', 'Code'], ['topics', 'topics', 'Topics'], ['missions', 'flag', 'Missions'], ['fix', 'bug', 'Fix it'], ['info', 'book', 'Info']],
     kbd: CAR_KBD, keysHint: 'W A S D drive, Q E slide in mecanum mode. Click the floor to send a navigation goal.', teleop: [0.5, 1.0],
     mainNodes: ['/limo_base', '/ydlidar_node', '/lane_detector'], arena: LIMO_ARENA, desc: () => limoDesc(),
     make: (d) => new LimoSim(d),
@@ -315,6 +315,11 @@ class TiltWatch(Node):
   ros2 param set /lane_follower speed 0.4      ros2 param set /navigator max_vel 0.6
   ros2 service call /reset_world std_srvs/srv/Empty     ros2 run tf2_ros tf2_echo odom laser_link
   ros2 run teleop_twist_keyboard teleop_twist_keyboard   (Shift + J/L slides in mecanum mode)
+The robot's own nodes can be stopped and started again, as on the real robot (Fix it tab: broken-robot tickets):
+  ros2 run limo_base limo_base_node --ros-args -p motion_mode:=mecanum
+  ros2 run ydlidar_ros2_driver ydlidar_ros2_driver_node     ros2 run slam_toolbox async_slam_toolbox_node
+  ros2 run tf2_ros static_transform_publisher --x 0.2 --frame-id base_link --child-frame-id tool_link
+  ros2 run topic_tools relay /scan /scan_copy     ros2 topic info /scan --verbose     ros2 topic echo /rosout
 Keys: Up/Down history · Tab completes · Ctrl+C stops · Ctrl+L clears`,
     missions: [
       { id: 'm1', title: 'First drive', text: 'Drive 2 m with the joystick, the buttons or W/A/S/D.', tab: 'control', xp: 15 },

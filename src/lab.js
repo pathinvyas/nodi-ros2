@@ -51,6 +51,8 @@ const IFACES = {
   'geometry_msgs/msg/Pose': { f: [['position', 'geometry_msgs/msg/Point'], ['orientation', 'geometry_msgs/msg/Quaternion']] },
   'geometry_msgs/msg/PoseStamped': { f: [['header', 'std_msgs/msg/Header'], ['pose', 'geometry_msgs/msg/Pose']] },
   'geometry_msgs/msg/Twist': { f: [['linear', 'geometry_msgs/msg/Vector3'], ['angular', 'geometry_msgs/msg/Vector3']], head: '# This expresses velocity in free space broken into its linear and angular parts.\n' },
+  'geometry_msgs/msg/TwistStamped': { f: [['header', 'std_msgs/msg/Header'], ['twist', 'geometry_msgs/msg/Twist']], head: '# A twist with reference coordinate frame and timestamp' },
+  'rcl_interfaces/msg/Log': { f: [['stamp', 'builtin_interfaces/msg/Time'], ['level', 'uint8'], ['name', 'string'], ['msg', 'string'], ['file', 'string'], ['function', 'string'], ['line', 'uint32']], head: '# Every node publishes its log messages here (DEBUG=10, INFO=20, WARN=30, ERROR=40, FATAL=50)' },
   'geometry_msgs/msg/PoseWithCovariance': { f: [['pose', 'geometry_msgs/msg/Pose'], ['covariance', 'float64[36]']] },
   'geometry_msgs/msg/TwistWithCovariance': { f: [['twist', 'geometry_msgs/msg/Twist'], ['covariance', 'float64[36]']] },
   'geometry_msgs/msg/Transform': { f: [['translation', 'geometry_msgs/msg/Vector3'], ['rotation', 'geometry_msgs/msg/Quaternion']] },
@@ -175,8 +177,13 @@ function parseYaml(src) {
 
 /* ============================== simulated ROS graph ============================== */
 const HIDE_TOPICS = new Set(['/parameter_events', '/rosout']);
+// Quality of service: every publisher and subscription has a profile. A subscription only receives from publishers whose
+// offer is at least as strong as its request (a RELIABLE reader ignores a BEST_EFFORT writer; TRANSIENT_LOCAL needs TRANSIENT_LOCAL).
+const QOS_DEF = { rel: 'RELIABLE', dur: 'VOLATILE', depth: 10 };
+const qosOf = (q) => Object.assign({}, QOS_DEF, q || {});
+function qosClash(pq, sq) { pq = pq || QOS_DEF; sq = sq || QOS_DEF; if (pq.rel === 'BEST_EFFORT' && sq.rel === 'RELIABLE') return 'RELIABILITY'; if (pq.dur === 'VOLATILE' && sq.dur === 'TRANSIENT_LOCAL') return 'DURABILITY'; return ''; }
 function makeBus() { return {
-  nodes: new Map(), topics: new Map(), listeners: new Map(), services: new Map(), pid: 4100,
+  nodes: new Map(), topics: new Map(), listeners: new Map(), services: new Map(), pid: 4100, clashes: new Set(), onClash: null, onPublish: null, onRemove: null,
   addNode(name, kind = 'other', opts = {}) {
     if (this.nodes.has(name)) return this.nodes.get(name);
     const n = { name, kind, pubs: new Set(), subs: new Set(), params: new Map(), hidden: !!opts.hidden, onParam: opts.onParam || null, user: !!opts.user };
@@ -188,26 +195,47 @@ function makeBus() { return {
     n.pubs.forEach(t => { const T = this.topics.get(t); if (T) T.pubs.delete(name); });
     n.subs.forEach(t => { const T = this.topics.get(t); if (T) T.subs.delete(name); const L = this.listeners.get(t); if (L) [...L].forEach(x => { if (x.node === name) L.delete(x); }); });
     [...this.services].forEach(([k, s]) => { if (s.node === name) this.services.delete(k); });
+    this.topics.forEach(T => { T.pubQos.delete(name); T.subQos.delete(name); if (T.held) T.held.delete(name); });
+    [...this.clashes].forEach(k => { if (k.split('|').includes(name)) this.clashes.delete(k); });
     this.nodes.delete(name);
+    if (this.onRemove) this.onRemove(name);
     [...this.topics].forEach(([k, T]) => { if (!T.pubs.size && !T.subs.size && !T.keep) this.topics.delete(k); });
   },
-  topic(name, type) { let T = this.topics.get(name); if (!T) { T = { name, type, pubs: new Map(), subs: new Map(), times: [], last: null, lastType: type, count: 0, pubAt: new Map() }; this.topics.set(name, T); } if (!T.type) T.type = type; return T; },
-  advertise(node, topic, type) { const T = this.topic(topic, type); T.pubs.set(node, type); const n = this.nodes.get(node); if (n) n.pubs.add(topic); return T; },
-  subscribe(node, topic, type, fn) {
-    const T = this.topic(topic, type); T.subs.set(node, type);
+  topic(name, type) { let T = this.topics.get(name); if (!T) { T = { name, type, pubs: new Map(), subs: new Map(), pubQos: new Map(), subQos: new Map(), times: [], last: null, lastType: type, count: 0, pubAt: new Map() }; this.topics.set(name, T); } if (!T.type) T.type = type; return T; },
+  advertise(node, topic, type, qos) { const T = this.topic(topic, type); T.pubs.set(node, type); if (qos || !T.pubQos.has(node)) T.pubQos.set(node, qosOf(qos)); const n = this.nodes.get(node); if (n) n.pubs.add(topic); return T; },
+  // every type seen on a topic name (publishers and subscriptions can disagree)
+  types(topic) { const T = this.topics.get(topic); if (!T) return []; const s = new Set([...T.pubs.values(), ...T.subs.values()]); if (!s.size && T.type) s.add(T.type); return [...s]; },
+  subscribe(node, topic, type, fn, qos) {
+    const T = this.topic(topic, type); T.subs.set(node, type); const q = qosOf(qos); T.subQos.set(node, q);
     const n = this.nodes.get(node); if (n) n.subs.add(topic);
     let L = this.listeners.get(topic); if (!L) { L = new Set(); this.listeners.set(topic, L); }
-    const rec = { node, type, fn }; L.add(rec);
-    if (T.latched && T.last && T.lastType === type) setTimeout(() => { if (L.has(rec)) { try { fn(T.last, T.lastFrom || '/robot_sim'); } catch (e) { console.error(e); } } }, 0);
-    return () => { L.delete(rec); const TT = this.topics.get(topic); if (TT && ![...L].some(x => x.node === node)) TT.subs.delete(node); };
+    const rec = { node, type, fn, qos: q }; L.add(rec);
+    // a latched topic (transient local) hands a late subscriber the last message of every publisher still running
+    if (T.latched) {
+      const held = T.held ? [...T.held] : T.last ? [[T.lastFrom || '/robot_sim', { type: T.lastType, msg: T.last }]] : [];
+      if (held.length) setTimeout(() => held.forEach(([from, x]) => {
+        if (!L.has(rec) || x.type !== type || from === node) return;
+        const bad = qosClash(T.pubQos.get(from), q); if (bad) { this.clash(from, node, topic, bad); return; }
+        try { fn(x.msg, from); } catch (e) { console.error(e); }
+      }), 0);
+    }
+    return () => { L.delete(rec); const TT = this.topics.get(topic); if (TT && ![...L].some(x => x.node === node)) { TT.subs.delete(node); TT.subQos.delete(node); } };
   },
   publish(node, topic, type, msg) {
     const T = this.topic(topic, type); const now = performance.now();
     if (!T.pubs.has(node)) this.advertise(node, topic, type);
     T.last = msg; T.lastType = type; T.lastFrom = node; T.count++; T.times.push(now); if (T.times.length > 80) T.times.shift(); T.pubAt.set(node, now);
-    const L = this.listeners.get(topic);
-    if (L) [...L].forEach(x => { if (x.type === type && x.node !== node) { try { x.fn(msg, node); } catch (e) { console.error(e); } } });
+    if (T.latched) (T.held || (T.held = new Map())).set(node, { type, msg });
+    const L = this.listeners.get(topic), pq = T.pubQos.get(node) || QOS_DEF;
+    if (L) [...L].forEach(x => {
+      if (x.type !== type || x.node === node) return;
+      const bad = qosClash(pq, x.qos); if (bad) { this.clash(node, x.node, topic, bad); return; }
+      try { x.fn(msg, node); } catch (e) { console.error(e); }
+    });
+    if (this.onPublish) this.onPublish(node, topic, type, msg);
   },
+  // reported once per publisher/subscription pair, like the warning DDS discovery gives
+  clash(pub, sub, topic, policy) { const k = `${pub}|${sub}|${topic}`; if (this.clashes.has(k)) return; this.clashes.add(k); if (this.onClash) this.onClash(pub, sub, topic, policy); },
   hz(topic) { const T = this.topics.get(topic); if (!T) return 0; const now = performance.now(); const ts = T.times.filter(t => now - t < 2000); if (ts.length < 2) return ts.length && now - ts[0] < 1100 ? 1 : 0; return (ts.length - 1) / ((ts[ts.length - 1] - ts[0]) / 1000); },
   active(topic, node) { const T = this.topics.get(topic); if (!T) return false; const now = performance.now(); if (node) { const t = T.pubAt.get(node); return t != null && now - t < 1600; } return T.times.length && now - T.times[T.times.length - 1] < 1600; },
   service(name, type, node, handler) { this.services.set(name, { type, node, handler }); },
@@ -356,6 +384,9 @@ const PROMPT = 'learner@ros2:~/ros2_ws$';
 const ROS2_CMDS = ['node', 'topic', 'service', 'param', 'interface', 'run', 'launch', 'pkg'];
 const VERBS = { node: ['list', 'info'], topic: ['list', 'echo', 'hz', 'info', 'type', 'pub'], service: ['list', 'type', 'call'], param: ['list', 'get', 'set', 'dump'], interface: ['list', 'show'], pkg: ['list', 'executables'] };
 const PKGS = { demo_nodes_cpp: ['talker', 'listener'], demo_nodes_py: ['talker', 'listener'], tf2_ros: ['tf2_echo', 'static_transform_publisher'], teleop_twist_keyboard: ['teleop_twist_keyboard'], lab_bringup: ['wander.launch.py', 'demo.launch.py'], turtlesim: ['turtlesim_node', 'turtle_teleop_key'] };
+// a stable fake DDS GID per endpoint, printed by `ros2 topic info -v`
+function gidOf(key) { let h1 = 2166136261; for (const c of key) h1 = Math.imul(h1 ^ c.charCodeAt(0), 16777619); const b = []; for (let i = 0; i < 16; i++) { h1 = Math.imul(h1 ^ i, 16777619); b.push(((h1 >>> 24) & 255).toString(16).padStart(2, '0')); } return b.join('.'); }
+const stampSec = () => { const st = stampNow(); return (st.sec + st.nanosec / 1e9).toFixed(9); };
 function tokenize(line) {
   const out = []; let cur = '', q = null, has = false;
   for (const ch of line) {
@@ -434,24 +465,31 @@ const CLI = {
     const { bus: Bus, missions: Missions, ui: Lab, pkgs: PKGS } = T.ctx; void Lab; void PKGS; void Missions;
     const p = (s, c) => T.print(s, c);
     const flags = r.filter(x => x.startsWith('-')), pos = r.filter(x => !x.startsWith('-'));
-    if (verb === 'list') { const ts = [...Bus.topics.values()].sort((x, y) => x.name.localeCompare(y.name)); p(ts.map(t => flags.includes('-t') ? `${t.name} [${t.type}]` : t.name).join('\n')); Missions.event('cmd', 'topic list'); return; }
+    if (verb === 'list') { const ts = [...Bus.topics.values()].sort((x, y) => x.name.localeCompare(y.name)); p(ts.map(t => flags.includes('-t') ? `${t.name} [${Bus.types(t.name).join(', ')}]` : t.name).join('\n')); Missions.event('cmd', 'topic list'); return; }
     if (verb === 'pub') return this.pub(T, r);
     const name = pos[0];
     if (!name) return p(`ros2 topic ${verb}: error: the following arguments are required: topic_name`, 'e');
     const Tp = Bus.topics.get(name);
-    if (verb === 'type') return Tp ? p(Tp.type) : p(`Unknown topic '${name}'`, 'e');
+    if (verb === 'type') return Tp ? p(Bus.types(name).join('\n')) : p(`Unknown topic '${name}'`, 'e');
     if (verb === 'info') {
       if (!Tp) return p(`Unknown topic '${name}'`, 'e');
-      let s = `Type: ${Tp.type}\nPublisher count: ${Tp.pubs.size}\nSubscription count: ${Tp.subs.size}`;
+      const tys = Bus.types(name).join(', ');
+      let s = `Type: ${tys}\nPublisher count: ${Tp.pubs.size}\nSubscription count: ${Tp.subs.size}`;
       if (flags.includes('-v') || flags.includes('--verbose')) {
-        s = `Type: ${Tp.type}\n\nPublisher count: ${Tp.pubs.size}\n\n` + [...Tp.pubs].map(([n, ty]) => `Node name: ${n.slice(1)}\nNode namespace: /\nTopic type: ${ty}\nEndpoint type: PUBLISHER\nQoS profile:\n  Reliability: RELIABLE\n  History (Depth): KEEP_LAST (10)\n  Durability: VOLATILE\n`).join('\n') + `\nSubscription count: ${Tp.subs.size}\n\n` + [...Tp.subs].map(([n, ty]) => `Node name: ${n.slice(1)}\nNode namespace: /\nTopic type: ${ty}\nEndpoint type: SUBSCRIPTION\nQoS profile:\n  Reliability: RELIABLE\n  History (Depth): KEEP_LAST (10)\n  Durability: VOLATILE\n`).join('\n');
+        const ep = (n, ty, q, kind) => `Node name: ${n.split('/').pop()}\nNode namespace: ${n.slice(0, n.lastIndexOf('/')) || '/'}\nTopic type: ${ty}\nEndpoint type: ${kind}\nGID: ${gidOf(n + kind + name)}\nQoS profile:\n  Reliability: ${q.rel}\n  History (Depth): KEEP_LAST (${q.depth})\n  Durability: ${q.dur}\n  Lifespan: Infinite\n  Deadline: Infinite\n  Liveliness: AUTOMATIC\n  Liveliness lease duration: Infinite\n`;
+        s = `Type: ${tys}\n\nPublisher count: ${Tp.pubs.size}\n\n` + [...Tp.pubs].map(([n, ty]) => ep(n, ty, Tp.pubQos.get(n) || QOS_DEF, 'PUBLISHER')).join('\n') + `\nSubscription count: ${Tp.subs.size}\n\n` + [...Tp.subs].map(([n, ty]) => ep(n, ty, Tp.subQos.get(n) || QOS_DEF, 'SUBSCRIPTION')).join('\n');
         const types = new Set([...Tp.pubs.values(), ...Tp.subs.values()]); if (types.size > 1) s += `\nWARNING: endpoints on ${name} use different types: ${[...types].join(', ')}`;
       }
       return p(s);
     }
     if (verb === 'echo') {
       if (!Tp || !Tp.pubs.size) { p(`WARNING: topic [${name}] does not appear to be published yet\nCould not determine the type for the passed topic`, 'w'); return; }
-      const once = flags.includes('--once'), type = Tp.type;
+      const tys = Bus.types(name); if (tys.length > 1) return p(`Cannot echo topic '${name}', as it contains more than one type: [${tys.join(', ')}]`, 'e');
+      const once = flags.includes('--once'), type = Tp.pubs.values().next().value || Tp.type;
+      // like ros2 topic echo: without --qos-* flags it picks a profile every publisher can serve
+      const qa = (k) => { const i = r.indexOf(k); return i >= 0 ? String(r[i + 1] || '').toLowerCase() : ''; }, prof = qa('--qos-profile');
+      const pqs = [...Tp.pubQos.values()], relF = qa('--qos-reliability') || (prof === 'sensor_data' ? 'best_effort' : ''), durF = qa('--qos-durability');
+      const myQ = { rel: relF ? (relF === 'best_effort' ? 'BEST_EFFORT' : 'RELIABLE') : pqs.every(q => q.rel === 'RELIABLE') ? 'RELIABLE' : 'BEST_EFFORT', dur: durF ? (durF === 'transient_local' ? 'TRANSIENT_LOCAL' : 'VOLATILE') : pqs.length && pqs.every(q => q.dur === 'TRANSIENT_LOCAL') ? 'TRANSIENT_LOCAL' : 'VOLATILE', depth: 10 };
       if (!IFACES[type]) return p(`The message type '${type}' is invalid`, 'e');
       const node = `/_ros2cli_${++Bus.pid}`; Bus.addNode(node, 'cli', { hidden: true, noParams: true });
       let last = 0, un = null;
@@ -461,7 +499,8 @@ const CLI = {
         if (once) { T.proc = null; un(); Bus.removeNode(node); Lab.termState(); if (name === '/scan') Missions.event('cmd', 'echo scan once'); }
       };
       Missions.event('cmd', 'echo:' + name);
-      un = Bus.subscribe(node, name, type, show);
+      un = Bus.subscribe(node, name, type, show, myQ);
+      [...Tp.pubQos].forEach(([pn, pq]) => { const bad = qosClash(pq, myQ); if (bad) p(`[WARN] [${stampSec()}] [${node.slice(1)}]: New publisher discovered on topic '${name}', offering incompatible QoS. No messages will be received from it. Last incompatible policy: ${bad}`, 'w'); void pn; });
       T.proc = { name: 'echo', stop: () => { un(); Bus.removeNode(node); } };
       if (!once && Bus.hz(name) > 4) p('(the lab terminal shows at most 4 messages per second)', 'd');
       return;
@@ -476,13 +515,16 @@ const CLI = {
   pub(T, r) {
     const { bus: Bus, missions: Missions, ui: Lab, pkgs: PKGS } = T.ctx; void Lab; void PKGS; void Missions;
     const p = (s, c) => T.print(s, c);
-    let rate = 1, once = false, times = 0; const pos = [];
+    let rate = 1, once = false, times = 0; const pos = [], q = {};
     for (let i = 0; i < r.length; i++) {
       const x = r[i];
       if (x === '-1' || x === '--once') once = true;
       else if (x === '-r' || x === '--rate') { rate = parseFloat(r[++i]); if (!(rate > 0)) return p('ros2 topic pub: error: argument -r/--rate: expected a positive number', 'e'); }
       else if (x === '-t' || x === '--times') times = parseInt(r[++i], 10) || 0;
-      else if (x === '-w' || x === '-p' || x === '--qos-depth' || x === '--qos-profile' || x === '--qos-reliability' || x === '--qos-durability' || x === '-n' || x === '--node-name') i++;
+      else if (x === '--qos-reliability') { const v = String(r[++i] || '').toLowerCase(); q.rel = v === 'best_effort' ? 'BEST_EFFORT' : 'RELIABLE'; }
+      else if (x === '--qos-durability') { const v = String(r[++i] || '').toLowerCase(); q.dur = v === 'transient_local' ? 'TRANSIENT_LOCAL' : 'VOLATILE'; }
+      else if (x === '--qos-profile') { if (String(r[++i] || '').toLowerCase() === 'sensor_data') q.rel = 'BEST_EFFORT'; }
+      else if (x === '-w' || x === '-p' || x === '--qos-depth' || x === '-n' || x === '--node-name') i++;
       else if (x.startsWith('-') && !/^-?\d/.test(x) && !x.startsWith('{')) return p(`ros2 topic pub: error: unrecognized arguments: ${x}`, 'e');
       else pos.push(x);
     }
@@ -494,7 +536,8 @@ const CLI = {
     let msg; try { msg = fillMsg(type, vals ? parseYaml(vals) : {}); } catch (e) { return p(e.message, 'e'); }
     const Tp = Bus.topics.get(topic);
     if (Tp && Tp.type && Tp.type !== type) p(`WARNING: ${topic} already uses ${Tp.type}. Subscribers expecting that type will ignore ${type}.`, 'w');
-    const node = `/_ros2cli_${++Bus.pid}`; Bus.addNode(node, 'cli', { noParams: false }); Bus.advertise(node, topic, type);
+    const node = `/_ros2cli_${++Bus.pid}`; Bus.addNode(node, 'cli', { noParams: false }); Bus.advertise(node, topic, type, q);
+    if (Tp) [...Tp.subQos].forEach(([sn, sq]) => { const bad = qosClash(qosOf(q), sq); if (bad) p(`[WARN] [${stampSec()}] [${node.slice(1)}]: New subscription discovered on topic '${topic}', requesting incompatible QoS. No messages will be sent to it. Last incompatible policy: ${bad}`, 'w'); void sn; });
     let k = 0;
     p('publisher: beginning loop');
     const fire = () => { k++; Bus.publish(node, topic, type, JSON.parse(JSON.stringify(msg))); p(`publishing #${k}: ${pyRepr(type, msg)}\n`); if ((once && k >= 1) || (times && k >= times)) finish(); };
