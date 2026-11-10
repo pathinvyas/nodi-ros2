@@ -299,7 +299,7 @@ class TiltWatch(Node):
   limo: {
     id: 'limo', name: 'LIMO', maker: 'AgileX', catLabel: 'Autonomous car', color: '#30A46C', hz: 60, cams: true, mSlam: 'm5',
     blurb: 'A small ROS car with four motion modes, lidar and a depth camera. Map the city table, navigate, follow lanes and stop at red lights.',
-    chipsHub: ['4 motion modes', 'lidar + SLAM', 'fix-it tickets'], tabs: [['control', 'drive', 'Control'], ['phys', 'chip', 'Physics'], ['term', 'terminal', 'Terminal'], ['code', 'code', 'Code'], ['topics', 'topics', 'Topics'], ['missions', 'flag', 'Missions'], ['fix', 'bug', 'Fix it'], ['info', 'book', 'Info']],
+    chipsHub: ['4 motion modes', 'lidar + SLAM', 'fix-it tickets'], tabs: [['control', 'drive', 'Control'], ['phys', 'chip', 'Physics'], ['term', 'terminal', 'Terminal'], ['code', 'code', 'Code'], ['topics', 'topics', 'Topics'], ['missions', 'flag', 'Missions'], ['fix', 'bug', 'Fix it'], ['vision', 'camera', 'Vision'], ['info', 'book', 'Info']],
     kbd: CAR_KBD, keysHint: 'W A S D drive, Q E slide in mecanum mode. Click the floor to send a navigation goal.', teleop: [0.5, 1.0],
     mainNodes: ['/limo_base', '/ydlidar_node', '/lane_detector'], arena: LIMO_ARENA, desc: () => limoDesc(),
     make: (d) => new LimoSim(d),
@@ -320,6 +320,9 @@ The robot's own nodes can be stopped and started again, as on the real robot (Fi
   ros2 run ydlidar_ros2_driver ydlidar_ros2_driver_node     ros2 run slam_toolbox async_slam_toolbox_node
   ros2 run tf2_ros static_transform_publisher --x 0.2 --frame-id base_link --child-frame-id tool_link
   ros2 run topic_tools relay /scan /scan_copy     ros2 topic info /scan --verbose     ros2 topic echo /rosout
+Camera (Vision tab: image viewer, OpenCV starter code):
+  ros2 topic hz /camera/color/image_raw     ros2 topic bw /camera/color/image_raw
+  ros2 topic echo /camera/color/camera_info --once     ros2 run tf2_ros tf2_echo base_link camera_color_optical_frame
 Keys: Up/Down history · Tab completes · Ctrl+C stops · Ctrl+L clears`,
     missions: [
       { id: 'm1', title: 'First drive', text: 'Drive 2 m with the joystick, the buttons or W/A/S/D.', tab: 'control', xp: 15 },
@@ -332,10 +335,16 @@ Keys: Up/Down history · Tab completes · Ctrl+C stops · Ctrl+L clears`,
       { id: 'm8', title: 'Red means stop', text: 'Stop before the white stop line while the traffic light is red.', tab: 'control', xp: 20 },
       { id: 'm9', title: 'Terminal pilot', text: 'Drive 1 m using only `ros2 topic pub` on /cmd_vel.', tab: 'term', xp: 20 },
       { id: 'm10', title: 'Code it', text: 'Run a Python node that drives LIMO 1 m. Try the obstacle stopper.', tab: 'code', xp: 30 },
+      { id: 'v1', title: 'Camera check', text: 'Measure the camera rate with `ros2 topic hz /camera/color/image_raw`, then read its intrinsics with `ros2 topic echo /camera/color/camera_info --once`.', tab: 'term', xp: 15, vision: true },
+      { id: 'v2', title: 'Follow the yellow line', text: 'Run the **Line follower** and let your node drive LIMO 4 m along the yellow line, steering from camera images only.', tab: 'vision', xp: 30, vision: true, tpl: 'line' },
+      { id: 'v3', title: 'The magenta ball', text: 'The **Colour tracker** hunts red. Change its HSV range so it finds the **magenta** ball, and stop 20 to 50 cm in front of it, facing it.', tab: 'vision', xp: 35, vision: true, tpl: 'color' },
+      { id: 'v4', title: 'Marker reader', text: 'Run the **ArUco marker reader** and drive around: your node must publish the IDs of 4 different markers on `/marker_id`.', tab: 'vision', xp: 30, vision: true, tpl: 'aruco' },
+      { id: 'v5', title: 'Dock at marker 7', text: 'Write a node that parks the camera 0.5 m in front of marker 7, centred and square to it (within 5 cm and 6°), then stops. `solvePnP` gives you the distance and angle. Tip: one small marker gives a noisy angle, so steer onto its centre line early, then keep it in the middle of the image.', tab: 'vision', xp: 50, vision: true, tpl: 'aruco' },
     ],
+    visionNote: 'LIMO\'s front camera publishes `/camera/color/image_raw` (320 × 240 `rgb8`, 10 Hz) and `/camera/color/camera_info`. Write OpenCV nodes in the **Code** tab: `cv_bridge` converts images to numpy arrays, and `cv2.imshow()` windows appear over the 3D view. Around the arena: ArUco markers (`DICT_4X4_50`, 12 cm) on the walls and the kiosk, a red ball and a magenta ball you can push or grab (Ctrl + drag).',
     specs: [['Maker', 'AgileX Robotics'], ['Type', 'ROS mobile robot, four motion modes'], ['Size', '322 × 220 × 251 mm'], ['Weight', '≈ 4.2–4.8 kg'], ['Payload', 'up to 4 kg'], ['Max speed', '1 m/s'], ['Wheelbase / track', '200 / 175 mm'], ['Min turning radius', '0.4 m (Ackermann)'], ['Lidar', 'EAI X2L or T-mini Pro (by version)'], ['Depth camera', 'Orbbec Dabai'], ['Compute', 'Jetson Nano, Orin Nano or Intel NUC'], ['ROS', 'ROS 1 Noetic, ROS 2 Foxy / Humble']],
-    ifaces: [['/cmd_vel', 'subscribe', 'geometry_msgs/msg/Twist', '`linear.x`, `angular.z`, and `linear.y` in mecanum mode'], ['/odom', 'publish', 'nav_msgs/msg/Odometry', 'Wheel odometry, 20 Hz (odom = arena frame here)'], ['/imu', 'publish', 'sensor_msgs/msg/Imu', 'Yaw and rates, 20 Hz'], ['/limo_status', 'publish', 'limo_msgs/msg/LimoStatus', '`motion_mode`: 0 diff/tracked, 1 Ackermann, 2 mecanum. Also battery and state'], ['/scan', 'publish', 'sensor_msgs/msg/LaserScan', '360 rays from −π to π: ranges[180] is straight ahead, 10 Hz'], ['/lane_error', 'publish', 'std_msgs/msg/Float64', 'Metres to the lane centre at the look-ahead point (+ = left), only when a lane is seen'], ['/traffic_light', 'publish', 'std_msgs/msg/String', 'red, yellow, green, or none'], ['/map', 'publish', 'nav_msgs/msg/OccupancyGrid', 'From /slam_toolbox when SLAM is on, 5 cm cells'], ['/goal_pose', 'subscribe', 'geometry_msgs/msg/PoseStamped', 'Goal for /navigator (click the floor or the map)'], ['/plan', 'publish', 'nav_msgs/msg/Path', 'Path from A* on the arena map'], ['/reset_world', 'service', 'std_srvs/srv/Empty', 'Reset the robot and the map'], ['/limo_base', 'parameters', 'string / double', '`motion_mode`, `max_linear_speed`, `max_angular_speed`, `cmd_timeout`']],
-    realism: 'The base runs on the simulator\'s own MuJoCo-style physics: a rigid chassis on four torque-limited hub motors, where tyre friction decides what really happens. Skid turns scrub and slip, mecanum rollers only grip across their axis, and Ackermann steering rolls about one turning centre (0.4 m minimum radius). `/odom` is integrated from the wheel encoders (with IMU heading in the skid modes), so it drifts like a real robot\'s. SLAM and navigation publish the `map → odom` correction; here that correction is computed from the true pose, while real SLAM estimates it from lidar scans and makes small errors of its own. `/limo_status` uses the same fields as the real limo_msgs/LimoStatus. On the real robot, lane and traffic-light detection come from camera images; here they are computed from the map, and switching modes is a click instead of swapping wheels.',
+    ifaces: [['/cmd_vel', 'subscribe', 'geometry_msgs/msg/Twist', '`linear.x`, `angular.z`, and `linear.y` in mecanum mode'], ['/odom', 'publish', 'nav_msgs/msg/Odometry', 'Wheel odometry, 20 Hz (odom = arena frame here)'], ['/imu', 'publish', 'sensor_msgs/msg/Imu', 'Yaw and rates, 20 Hz'], ['/limo_status', 'publish', 'limo_msgs/msg/LimoStatus', '`motion_mode`: 0 diff/tracked, 1 Ackermann, 2 mecanum. Also battery and state'], ['/scan', 'publish', 'sensor_msgs/msg/LaserScan', '360 rays from −π to π: ranges[180] is straight ahead, 10 Hz'], ['/lane_error', 'publish', 'std_msgs/msg/Float64', 'Metres to the lane centre at the look-ahead point (+ = left), only when a lane is seen'], ['/traffic_light', 'publish', 'std_msgs/msg/String', 'red, yellow, green, or none'], ['/map', 'publish', 'nav_msgs/msg/OccupancyGrid', 'From /slam_toolbox when SLAM is on, 5 cm cells'], ['/goal_pose', 'subscribe', 'geometry_msgs/msg/PoseStamped', 'Goal for /navigator (click the floor or the map)'], ['/plan', 'publish', 'nav_msgs/msg/Path', 'Path from A* on the arena map'], ['/reset_world', 'service', 'std_srvs/srv/Empty', 'Reset the robot and the map'], ['/camera/color/image_raw', 'publish', 'sensor_msgs/msg/Image', '320 × 240 `rgb8`, 10 Hz, frame `camera_color_optical_frame` (rendered only while something subscribes)'], ['/camera/color/camera_info', 'publish', 'sensor_msgs/msg/CameraInfo', 'Pinhole intrinsics `k`, no distortion'], ['/marker_id', 'subscribe', 'std_msgs/msg/Int32', 'Marker IDs your node reports (Vision missions)'], ['/limo_base', 'parameters', 'string / double', '`motion_mode`, `max_linear_speed`, `max_angular_speed`, `cmd_timeout`']],
+    realism: 'The base runs on the simulator\'s own MuJoCo-style physics: a rigid chassis on four torque-limited hub motors, where tyre friction decides what really happens. Skid turns scrub and slip, mecanum rollers only grip across their axis, and Ackermann steering rolls about one turning centre (0.4 m minimum radius). `/odom` is integrated from the wheel encoders (with IMU heading in the skid modes), so it drifts like a real robot\'s. SLAM and navigation publish the `map → odom` correction; here that correction is computed from the true pose, while real SLAM estimates it from lidar scans and makes small errors of its own. `/limo_status` uses the same fields as the real limo_msgs/LimoStatus. On the real robot, lane and traffic-light detection come from camera images; here `/lane_detector` computes them from the map, and switching modes is a click instead of swapping wheels. The camera itself is real enough for OpenCV: its images are rendered from the robot\'s camera pose with the intrinsics in `camera_info`, so detection and `solvePnP` work as on the robot. It has no lens distortion, noise, motion blur or auto exposure.',
     pyHint: 'Pick a template, press Run and watch LIMO. Note the lidar order: ranges[180] is straight ahead.',
     py: {
       stop: { label: 'Obstacle stopper (/scan)', code: PY_HEAD + `from geometry_msgs.msg import Twist
@@ -418,6 +427,173 @@ class GoTo(Node):
             self.get_logger().info('arrived!')
         self.pub.publish(cmd)
 ` + PY_MAIN('GoTo') },
+      cam: { label: 'Camera viewer (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
+
+
+class CameraViewer(Node):
+    """Show what LIMO's camera sees, and the edges OpenCV finds in it."""
+
+    def __init__(self):
+        super().__init__('camera_viewer')
+        self.bridge = CvBridge()
+        self.create_subscription(Image, '/camera/color/image_raw', self.on_image, 10)
+        self.frames = 0
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')   # OpenCV images are BGR
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 60, 150)
+        self.frames += 1
+        if self.frames % 20 == 1:
+            h, w = frame.shape[:2]
+            b, g, r = frame[h // 2, w // 2]
+            self.get_logger().info(f'{w}x{h} image, centre pixel BGR ({b}, {g}, {r}), mean brightness {gray.mean():.0f}')
+        cv2.imshow('camera', frame)   # windows appear over the 3D view
+        cv2.imshow('edges', edges)
+        cv2.waitKey(1)
+` + PY_MAIN('CameraViewer') },
+      line: { label: 'Line follower (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from geometry_msgs.msg import Twist
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+# yellow in OpenCV's HSV: hue 0-179, saturation and value 0-255
+YELLOW_LO = np.array([15, 70, 80])
+YELLOW_HI = np.array([40, 255, 255])
+
+
+class LineFollower(Node):
+    """Follow the yellow line: threshold it in HSV, find its centre with moments, steer towards it."""
+
+    def __init__(self):
+        super().__init__('line_follower')
+        self.declare_parameter('speed', 0.15)   # m/s
+        self.declare_parameter('kp', 0.006)     # rad/s per pixel of error
+        self.declare_parameter('offset', 0)     # pixels: try -50 to keep the line on your left (right lane)
+        self.bridge = CvBridge()
+        self.last_err = 0.0
+        self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.create_subscription(Image, '/camera/color/image_raw', self.on_image, 10)
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = frame.shape[:2]
+        roi = frame[int(h * 0.6):, :]               # the floor just ahead of LIMO
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, YELLOW_LO, YELLOW_HI)
+        m = cv2.moments(mask, True)                 # binary image: m00 = number of yellow pixels
+        cmd = Twist()
+        if m['m00'] > 20:
+            cx, cy = m['m10'] / m['m00'], m['m01'] / m['m00']
+            err = cx - (w / 2 + self.get_parameter('offset').value)   # + means the line is to the right
+            cmd.linear.x = self.get_parameter('speed').value
+            cmd.angular.z = -self.get_parameter('kp').value * err
+            self.last_err = err
+            cv2.circle(roi, (int(cx), int(cy)), 6, (0, 0, 255), -1)
+        else:
+            cmd.linear.x = 0.05                     # lost the line: creep and turn towards where it was
+            cmd.angular.z = -0.5 if self.last_err > 0 else 0.5
+        self.pub.publish(cmd)
+        cv2.imshow('mask', mask)
+        cv2.imshow('line', roi)
+        cv2.waitKey(1)
+` + PY_MAIN('LineFollower') },
+      color: { label: 'Colour tracker (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from geometry_msgs.msg import Twist
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+# red wraps around hue 0 in OpenCV's HSV (0-179), so it needs two ranges
+RANGES = [((0, 120, 70), (8, 255, 255)), ((170, 120, 70), (179, 255, 255))]
+STOP_AREA = 0.06    # stop when the blob covers 6% of the image (a 10 cm ball, about 30 cm away)
+
+
+class ColourTracker(Node):
+    """Find the biggest blob of a colour, turn to centre it and drive up to it."""
+
+    def __init__(self):
+        super().__init__('colour_tracker')
+        self.bridge = CvBridge()
+        self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.create_subscription(Image, '/camera/color/image_raw', self.on_image, 10)
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = frame.shape[:2]
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = np.zeros((h, w), np.uint8)
+        for lo, hi in RANGES:
+            mask |= cv2.inRange(hsv, np.array(lo), np.array(hi))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))   # remove specks
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cmd = Twist()
+        if contours:
+            blob = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(blob) / (w * h)
+            (x, y), r = cv2.minEnclosingCircle(blob)
+            err = (x - w / 2) / (w / 2)             # -1 (far left) .. +1 (far right)
+            cmd.angular.z = -1.2 * err
+            if area < STOP_AREA and abs(err) < 0.3:
+                cmd.linear.x = 0.15
+            cv2.circle(frame, (int(x), int(y)), int(r), (0, 255, 0), 2)
+        else:
+            cmd.angular.z = 0.5                     # nothing seen: turn on the spot and search
+        self.pub.publish(cmd)
+        cv2.imshow('tracker', frame)
+        cv2.imshow('mask', mask)
+        cv2.waitKey(1)
+` + PY_MAIN('ColourTracker') },
+      aruco: { label: 'ArUco marker reader (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image, CameraInfo
+from std_msgs.msg import Int32
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+MARKER_SIZE = 0.12   # metres: the side of the black square
+
+
+class MarkerReader(Node):
+    """Detect ArUco markers (DICT_4X4_50), publish their IDs and estimate where they are."""
+
+    def __init__(self):
+        super().__init__('marker_reader')
+        self.bridge = CvBridge()
+        self.K, self.D = None, None
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        params = cv2.aruco.DetectorParameters()
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX   # sub-pixel corners: much better poses
+        self.detector = cv2.aruco.ArucoDetector(dictionary, params)
+        s = MARKER_SIZE / 2   # marker corners: top-left, top-right, bottom-right, bottom-left
+        self.square = np.array([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], dtype=np.float32)
+        self.pub = self.create_publisher(Int32, '/marker_id', 10)
+        self.create_subscription(CameraInfo, '/camera/color/camera_info', self.on_info, 10)
+        self.create_subscription(Image, '/camera/color/image_raw', self.on_image, 10)
+
+    def on_info(self, msg):
+        self.K = np.array(msg.k, dtype=np.float64).reshape(3, 3)   # fx, fy, cx, cy
+        self.D = np.array(msg.d, dtype=np.float64)
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        corners, ids, _ = self.detector.detectMarkers(frame)
+        if ids is not None:
+            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+            for c, i in zip(corners, ids.flatten()):
+                self.pub.publish(Int32(data=int(i)))
+                if self.K is None:
+                    continue
+                ok, rvec, tvec = cv2.solvePnP(self.square, c.reshape(4, 2), self.K, self.D, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+                if ok:
+                    x, y, z = tvec.flatten()   # camera optical frame: x right, y down, z forward
+                    self.get_logger().info(f'marker {i}: {z:.2f} m ahead, {x:+.2f} m to the right',
+                                           throttle_duration_sec=1.0)
+        cv2.imshow('markers', frame)
+        cv2.waitKey(1)
+` + PY_MAIN('MarkerReader') },
     },
   },
   cobot: {

@@ -226,3 +226,44 @@ label.mini select { max-width: 260px; font: 12.5px var(--font-mono); }
 .mission-bar .fix-lvl { margin-left: 6px; vertical-align: 2px; }
 .mission-bar .fix-last { font: 11.5px/1.4 var(--font-mono); color: var(--warn); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mission-bar .fix-last[hidden] { display: none; }
+
+/* Vision lab: image viewer, missions, OpenCV windows */
+.vis { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; }
+.vis h4 { font-size: 15px; margin: 4px 0 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.vis h4 span { font: 400 12.5px var(--font-body); color: var(--muted); }
+.vis :not(pre) > code { white-space: normal; overflow-wrap: anywhere; }
+.vis-viewer { border: 2px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--surface); }
+.vis-bar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.vis-bar label { display: inline-flex; color: var(--muted); }
+.vis-bar label .ico { width: 18px; height: 18px; }
+.vis-bar .sel { flex: 1 1 200px; min-width: 0; font-family: var(--font-mono); font-size: 13px; }
+.vis-info { font: 12px var(--font-mono); color: var(--muted); white-space: nowrap; }
+.vis-frame { position: relative; background: #0B1210; line-height: 0; }
+.vis-img { width: 100%; height: auto; aspect-ratio: 4 / 3; image-rendering: pixelated; cursor: crosshair; display: block; }
+.vis-img:focus-visible { outline: 3px solid var(--c-srv); outline-offset: -3px; }
+.vis-cross { position: absolute; width: 15px; height: 15px; margin: -7px 0 0 -7px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px #000, inset 0 0 0 1px #000; pointer-events: none; }
+.vis-cross[hidden] { display: none; }
+.vis-pix { margin: 0; padding: 7px 10px; font: 12.5px/1.5 var(--font-mono); color: var(--ink-2); display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.vis-sw { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--line); flex: none; }
+.vis .sidecap { margin: 0; }
+.vis-missions { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.vis-missions li { display: flex; gap: 10px; border: 2px solid var(--line); border-radius: 12px; padding: 9px 11px; align-items: flex-start; }
+.vis-missions li.done { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+.vis-m-ic .ico { width: 20px; height: 20px; color: var(--muted); margin-top: 1px; }
+.vis-missions li.done .vis-m-ic .ico { color: var(--good); }
+.vis-missions li > div { display: grid; gap: 4px; justify-items: start; min-width: 0; }
+.vis-missions b { font: 600 15px var(--font-display); }
+.vis-missions .xp { font: 700 12px var(--font-display); color: var(--c-msg); margin-left: 4px; }
+.vis-missions p { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--ink-2); }
+.vis-tpls { display: flex; gap: 8px; flex-wrap: wrap; }
+.vis-tpls .btn .ico { width: 16px; height: 16px; }
+.sno-imshow { position: absolute; left: 8px; bottom: 8px; display: flex; gap: 6px; align-items: flex-end; flex-wrap: wrap-reverse; max-width: calc(100% - 16px); z-index: 3; pointer-events: none; }
+.sno-imshow[hidden] { display: none; }
+.imwin { margin: 0; width: 168px; background: #11161A; border: 1px solid #2B3A44; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 14px rgba(0, 0, 0, .35); pointer-events: auto; }
+.imwin figcaption { display: flex; align-items: center; gap: 4px; padding: 2px 3px 2px 8px; font: 11.5px var(--font-mono); color: #DCE6EA; background: #1D262D; }
+.imwin figcaption span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.imwin .imx { border: 0; background: transparent; color: #AFC0C8; width: 26px; height: 22px; border-radius: 5px; display: grid; place-items: center; cursor: pointer; }
+.imwin .imx:hover, .imwin .imx:focus-visible { background: #33444F; color: #fff; outline: none; }
+.imwin .imx .ico { width: 13px; height: 13px; }
+.imwin canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+@media (max-width: 600px) { .imwin { width: 112px; } }
