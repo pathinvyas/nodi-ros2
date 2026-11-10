@@ -209,6 +209,7 @@ function laneLoop(rd, R) {
 }
 
 /* ---------- LIMO simulator ---------- */
+const tfMat = (x, y, z, q) => { const qx = +q.x || 0, qy = +q.y || 0, qz = +q.z || 0, qw = q.w == null ? 1 : +q.w; return K3.fromRPY(x, y, z, Math.atan2(2 * (qw * qx + qy * qz), 1 - 2 * (qx * qx + qy * qy)), Math.asin(Math.max(-1, Math.min(1, 2 * (qw * qy - qz * qx)))), Math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))); };
 class LimoSim extends SnoSim {
   constructor(def) {
     super(def);
@@ -259,18 +260,123 @@ class LimoSim extends SnoSim {
   P0(k) { return this.P('/limo_base', k); }
   /* ---------- ROS ---------- */
   setupRos() {
-    const c = '/limo_base';
-    this.node(c, 'sim', [['max_linear_speed', 1.0, 'double', [0.05, 1.0]], ['max_angular_speed', 2.5, 'double', [0.1, 4]], ['cmd_timeout', 0.6, 'double', [0.1, 5]], ['motion_mode', 'diff', 'string']]);
-    this.cmdVelSub(c);
-    ['/odom', 'nav_msgs/msg/Odometry', '/imu', 'sensor_msgs/msg/Imu', '/limo_status', 'limo_msgs/msg/LimoStatus', '/tf', 'tf2_msgs/msg/TFMessage', '/tf_static', 'tf2_msgs/msg/TFMessage'].forEach((x, i, a) => { if (i % 2 === 0) this.bus.advertise(c, x, a[i + 1]); });
-    this.bus.topic('/tf_static', 'tf2_msgs/msg/TFMessage').latched = true;
-    this.pub(c, '/tf_static', 'tf2_msgs/msg/TFMessage', this.tfMsg(['laser_joint', 'camera_joint', 'imu_joint', 'base_joint'].concat(this.def.cobot ? ['arm_mount'] : []).map(n => { const j = this.kin.J[n]; return [j.parent, j.child, j.O]; })));
-    this.node('/ydlidar_node', 'driver', [['range_max', 8.0, 'double', [1, 12]], ['frequency', 10.0, 'double', [5, 12], true]]);
-    this.bus.advertise('/ydlidar_node', '/scan', 'sensor_msgs/msg/LaserScan');
-    this.bus.service('/reset_world', 'std_srvs/srv/Empty', c, () => { this.reset(); this.event('service', '/reset_world'); return {}; });
-    if (this.lane) { this.node('/lane_detector', 'vision', [['lookahead', 0.3, 'double', [0.1, 0.8]]]); this.bus.advertise('/lane_detector', '/lane_error', 'std_msgs/msg/Float64'); this.bus.advertise('/lane_detector', '/traffic_light', 'std_msgs/msg/String'); }
+    this.tn = {}; this.tfStatic = new Map(); const B = this.bus;
+    // the TF tree is what is actually being published: static frames from /tf_static, moving links from the robot model
+    B.onPublish = (node, topic, type, msg) => { if (topic === '/tf_static' && msg && msg.transforms) this.noteStatic(node, msg.transforms); };
+    B.onRemove = (node) => { this.tfStatic.delete(node); };
+    B.topic('/tf_static', 'tf2_msgs/msg/TFMessage').latched = true;
+    this.restoreRobot({});
+    if (this.lane) { this.node('/lane_detector', 'vision', [['lookahead', 0.3, 'double', [0.1, 0.8]]]); B.advertise('/lane_detector', '/lane_error', 'std_msgs/msg/Float64'); B.advertise('/lane_detector', '/traffic_light', 'std_msgs/msg/String'); }
     this.setupExtra();
   }
+  staticJoints() { return ['base_joint', 'laser_joint', 'camera_joint', 'imu_joint'].concat(this.def.cobot ? ['arm_mount'] : []); }
+  pkgs() { return Object.assign(super.pkgs(), { robot_state_publisher: ['robot_state_publisher'], limo_base: ['limo_base_node'], ydlidar_ros2_driver: ['ydlidar_ros2_driver_node'], slam_toolbox: ['async_slam_toolbox_node'] }); }
+  // The robot's bringup, the way its launch file starts it: description, lidar transform, base driver, lidar driver.
+  // cfg {} is the normal robot; a Fix it ticket passes its fault: cfg.<proc> = false leaves that node out, an object
+  // starts it with { params, remaps }, cfg.died names a node that crashes at start-up, cfg.slam adds SLAM, and
+  // cfg.joy starts the joystick's teleop node publishing 'twist' or 'stamped' (TwistStamped) on /cmd_vel.
+  restoreRobot(cfg = {}) {
+    const B = this.bus, D = this.procDefs();
+    Object.keys(this.procs).forEach(k => this.stopProc(k));
+    ['nav', 'lane'].forEach(k => { if (this.beh[k]) this.setBeh(k, false); });
+    [...B.nodes.keys()].filter(n => n === '/teleop_panel' || n === '/goal_tool' || /^\/(static_transform_publisher_|relay)/.test(n)).forEach(n => B.removeNode(n));
+    this._tele = null; this.keys = {}; this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' }; this.warnT = {}; this.lastWarn = ''; B.clashes.clear();
+    const d0 = new Date(), p2 = (v) => String(v).padStart(2, '0'), day = `${d0.getFullYear()}-${p2(d0.getMonth() + 1)}-${p2(d0.getDate())}-${p2(d0.getHours())}-${p2(d0.getMinutes())}-${p2(d0.getSeconds())}`;
+    const keys = ['rsp', 'laser_tf', 'base', 'lidar'].concat(cfg.slam ? ['slam'] : []).filter(k => cfg[k] !== false || cfg.died === k);
+    this.launchLabel = {};
+    this.log('launch', 'INFO', `All log files can be found below /home/learner/.ros/log/${day}-${this.id}-sim-${B.pid}`, true);
+    this.log('launch', 'INFO', 'Default logging verbosity is set to INFO', true);
+    const run = keys.map((k, i) => { const d = D[k], label = `${d.exe}-${i + 1}`, pid = ++B.pid; this.launchLabel[d.node] = label; this.log(label, 'INFO', `process started with pid [${pid}]`, true); return [k, d, label, pid]; });
+    run.forEach(([k, d, label, pid]) => {
+      if (cfg[k] !== false) { const c = cfg[k]; this.startProc(k, c && typeof c === 'object' ? c : {}); return; }
+      if (d.crash) this.log(label, 'ERROR', d.crash, 'out');
+      this.log(label, 'ERROR', `process has died [pid ${pid}, exit code 1, cmd '/opt/ros/jazzy/lib/${d.pkg}/${d.exe} --ros-args -r __node:=${d.node.slice(1)} --params-file /tmp/launch_params_${Math.random().toString(36).slice(2, 10)}'].`, true);
+    });
+    if (cfg.joy) { const st = cfg.joy === 'stamped'; this.node('/teleop_panel', 'teleop', [['publish_stamped_twist', st, 'bool']]); B.advertise('/teleop_panel', '/cmd_vel', st ? 'geometry_msgs/msg/TwistStamped' : 'geometry_msgs/msg/Twist'); }
+    if (SnoUI.cur === this) SnoUI.refreshTab('control');
+  }
+  /* ---------- the robot's own nodes are processes: they can crash, be restarted, remapped and given parameters ---------- */
+  procDefs() {
+    if (this._pd) return this._pd;
+    const B = this.bus, TF = 'tf2_msgs/msg/TFMessage', LS = 'sensor_msgs/msg/LaserScan', latched = { dur: 'TRANSIENT_LOCAL', depth: 1 };
+    const qosOk = (k, v) => k.startsWith('qos_overrides.') && !['reliable', 'best_effort', 'system_default'].includes(String(v)) ? `${k}: '${v}' is not a reliability (use reliable or best_effort)` : '';
+    const statics = (node, joints) => { B.topic('/tf_static', TF).latched = true; B.advertise(node, '/tf_static', TF, latched); this.pub(node, '/tf_static', TF, this.tfMsg(joints.map(n => { const j = this.kin.J[n]; return [j.parent, j.child, j.O]; }))); };
+    return (this._pd = {
+      rsp: { pkg: 'robot_state_publisher', exe: 'robot_state_publisher', node: '/robot_state_publisher', kind: 'description', params: () => [['publish_frequency', 20.0, 'double', [1, 100]]],
+        start: () => { const n = '/robot_state_publisher'; B.advertise(n, '/tf', TF); B.subscribe(n, '/joint_states', 'sensor_msgs/msg/JointState', () => {}); statics(n, this.staticJoints().filter(j => j !== 'laser_joint')); this.kin.links.slice(0, 4).forEach(l => this.log(n, 'INFO', `got segment ${l}`)); } },
+      laser_tf: { pkg: null, exe: 'static_transform_publisher', node: '/base_link_to_laser_link', kind: 'tf', params: () => [],
+        start: () => statics('/base_link_to_laser_link', ['laser_joint']) },
+      base: { pkg: 'limo_base', exe: 'limo_base_node', node: '/limo_base', kind: 'sim',
+        params: () => [['max_linear_speed', 1.0, 'double', [0.05, 1.0]], ['max_angular_speed', 2.5, 'double', [0.1, 4]], ['cmd_timeout', 0.6, 'double', [0.1, 5]], ['motion_mode', this.mode || 'diff', 'string']],
+        check: (k, v) => k === 'motion_mode' && !LIMO_MODES.some(x => x[0] === String(v).toLowerCase()) ? 'motion_mode must be diff, ackermann, tracked or mecanum' : ['max_linear_speed', 'max_angular_speed', 'cmd_timeout'].includes(k) && (v <= 0 || v > 5) ? `${k} is out of range` : '',
+        start: (rec) => {
+          const c = '/limo_base', R = rec.R; this.tn.cmd = R('cmd_vel'); this.tn.odom = R('odom'); this.tn.imu = R('imu'); this.tn.status = R('limo_status');
+          rec.un.push(this.cmdVelSub(c, this.tn.cmd));
+          [[this.tn.odom, 'nav_msgs/msg/Odometry'], [this.tn.imu, 'sensor_msgs/msg/Imu'], [this.tn.status, 'limo_msgs/msg/LimoStatus'], ['/tf', TF]].forEach(([t, ty]) => B.advertise(c, t, ty));
+          B.service('/reset_world', 'std_srvs/srv/Empty', c, () => { this.reset(); this.event('service', '/reset_world'); return {}; });
+          const mm = String(this.P(c, 'motion_mode')).toLowerCase(); if (mm !== this.mode && LIMO_MODES.some(x => x[0] === mm)) this.setMode(mm, true);
+          this.log(c, 'INFO', `LIMO base ready, listening on ${this.tn.cmd} (motion mode: ${this.mode})`);
+        },
+        stop: () => { this.tn.cmd = null; this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' }; } },
+      lidar: { pkg: 'ydlidar_ros2_driver', exe: 'ydlidar_ros2_driver_node', node: '/ydlidar_node', kind: 'driver',
+        // frame_id and the QoS override are read once at start-up, so they are read-only here: restart the driver to change them
+        params: () => [['range_max', 8.0, 'double', [1, 12]], ['frequency', 10.0, 'double', [5, 12], true], ['frame_id', 'laser_link', 'string', null, true], ['qos_overrides./scan.publisher.reliability', 'reliable', 'string', null, true]],
+        check: qosOk, crash: '[YDLIDAR]:Error, cannot bind to the specified serial port[/dev/ydlidar] and baudrate[115200]',
+        start: (rec) => {
+          const n = '/ydlidar_node', be = this.P(n, 'qos_overrides./scan.publisher.reliability') === 'best_effort'; this.tn.scan = rec.R('scan');
+          B.advertise(n, this.tn.scan, LS, { rel: be ? 'BEST_EFFORT' : 'RELIABLE', depth: be ? 5 : 10 });
+          this.log(n, 'INFO', '[YDLIDAR] Lidar running correctly! The health status: good'); this.log(n, 'INFO', `Now YDLIDAR is scanning: ${this.tn.scan} in frame '${this.P(n, 'frame_id')}', 10 Hz`);
+        },
+        stop: () => { this.tn.scan = null; this.ranges.fill(Infinity); } },
+      slam: { pkg: 'slam_toolbox', exe: 'async_slam_toolbox_node', node: '/slam_toolbox', kind: 'slam',
+        params: () => [['resolution', 0.05, 'double', [0.05, 0.05], true], ['map_update_interval', 1.0, 'double', [0.2, 5]], ['qos_overrides./scan.subscription.reliability', 'reliable', 'string', null, true]],
+        check: qosOk,
+        start: (rec) => {
+          const n = '/slam_toolbox', R = rec.R, be = this.P(n, 'qos_overrides./scan.subscription.reliability') === 'best_effort'; this.tn.map = R('map');
+          B.advertise(n, this.tn.map, 'nav_msgs/msg/OccupancyGrid', latched); B.advertise(n, '/tf', TF);
+          rec.un.push(B.subscribe(n, R('scan'), LS, (m) => this.onSlamScan(m), { rel: be ? 'BEST_EFFORT' : 'RELIABLE', depth: 5 }), B.subscribe(n, R('odom'), 'nav_msgs/msg/Odometry', () => {}), B.subscribe(n, '/tf', TF, () => {}), B.subscribe(n, '/tf_static', TF, () => {}, latched));
+          this.beh.slam = true; this.log(n, 'INFO', 'Using solver plugin solver_plugins::CeresSolver'); this.log(n, 'INFO', 'CeresSolver: Using SCHUR_JACOBI preconditioner.');
+        },
+        stop: () => { this.beh.slam = false; } },
+    });
+  }
+  startProc(key, o = {}) {
+    const d = this.procDefs()[key]; if (!d) return;
+    if (this.procs[key]) this.stopProc(key);
+    const rec = this.procs[key] = { key, R: this.remapper(o.remaps), remaps: o.remaps || [], un: [], T: o.T || null };
+    if (o.T) this.procTerm[d.node] = o.T; else delete this.procTerm[d.node];
+    const given = o.params || {};
+    this.node(d.node, d.kind, d.params().map(([k, v, t, range, ro]) => [k, k in given ? given[k] : v, t, range, ro]));
+    d.start(rec);
+    if (SnoUI.cur === this) SnoUI.refreshTab('control');
+  }
+  stopProc(key) {
+    const d = this.procDefs()[key], rec = this.procs[key]; if (!d || !rec) return;
+    rec.un.forEach(f => { try { f(); } catch (e) { /* already gone */ } });
+    delete this.procs[key]; delete this.procTerm[d.node];
+    if (d.stop) d.stop(rec);
+    this.bus.removeNode(d.node);
+    if (SnoUI.cur === this) SnoUI.refreshTab('control');
+  }
+  /* ---------- TF: frames exist only while someone publishes them ---------- */
+  noteStatic(node, list) {
+    let m = this.tfStatic.get(node); if (!m) this.tfStatic.set(node, m = new Map());
+    list.forEach(t => { const tr = t.transform || {}, p = tr.translation || {}, q = tr.rotation || {}; m.set(t.child_frame_id, { parent: (t.header || {}).frame_id, T: tfMat(+p.x || 0, +p.y || 0, +p.z || 0, q) }); });
+  }
+  staticOf(f) { let hit = null; this.tfStatic.forEach(m => { if (m.has(f)) hit = m.get(f); }); return hit; }
+  // pose of a frame in odom, following the published tree; null when the chain is broken
+  poseOf(f, d = 0) {
+    if (!f || d > 16) return null;
+    const base = !!this.procs.base, root = this.kin.root;
+    if (f === 'odom') return base ? K3.I() : null;
+    if (f === 'map') return base && (this.beh.slam || this.beh.nav) ? K3.inv(this.mapToOdom()) : null;
+    if (f === root) { if (!base) return null; const O = this.odom; return K3.fromRPY(O.x, O.y, 0, 0, 0, O.th); }
+    const st = this.staticOf(f); if (st) { const P = this.poseOf(st.parent, d + 1); return P ? K3.mul(P, st.T) : null; }
+    this._sk = this._sk || new Set(this.staticJoints().map(n => this.kin.J[n].child));
+    if (this.kin.T[f] && !this._sk.has(f) && this.procs.rsp) { const R0 = this.poseOf(root, d + 1); return R0 ? K3.mul(R0, K3.mul(K3.inv(this.kin.T[root]), this.kin.T[f])) : null; }
+    return null;
+  }
+  warnEvery(key, sec, node, text) { const t = (this.warnT = this.warnT || {}); if (t[key] != null && this.t - t[key] < sec) return; t[key] = this.t; this.log(node, 'WARN', text); }
   setupExtra() { }
   onParam(node, k, v) {
     if (node === '/limo_base' && k === 'motion_mode') { const m = String(v).toLowerCase(), ok = LIMO_MODES.some(x => x[0] === m) || m === 'mcnamu'; if (!ok) return { ok: false, reason: 'motion_mode must be diff, ackermann, tracked or mecanum' }; this.setMode(m === 'mcnamu' ? 'mecanum' : m, true); this.event('param', { node, k, v: m }); return { ok: true }; }
@@ -291,11 +397,9 @@ class LimoSim extends SnoSim {
     return b;
   }
   setBeh(k, on) {
-    if (this.beh[k] === on) return; this.beh[k] = on; const B = this.bus;
-    if (k === 'slam') {
-      if (on) { this.node('/slam_toolbox', 'slam', [['resolution', 0.05, 'double', [0.05, 0.05], true], ['map_update_interval', 1.0, 'double', [0.2, 5]]]); B.advertise('/slam_toolbox', '/map', 'nav_msgs/msg/OccupancyGrid'); this.unSlam = [B.subscribe('/slam_toolbox', '/scan', 'sensor_msgs/msg/LaserScan', (m) => this.onSlamScan(m)), B.subscribe('/slam_toolbox', '/odom', 'nav_msgs/msg/Odometry', () => {})]; }
-      else { (this.unSlam || []).forEach(u => u()); B.removeNode('/slam_toolbox'); }
-    }
+    if (this.beh[k] === on) return; const B = this.bus;
+    if (k === 'slam') { if (on) this.startProc('slam'); else this.stopProc('slam'); this.event('behavior', { k, on }); SnoUI.refreshTab('control'); return; }
+    this.beh[k] = on;
     if (k === 'lane') {
       if (on) { this.node('/lane_follower', 'behavior', [['speed', 0.3, 'double', [0.05, 0.8]], ['kp', 6.0, 'double', [0, 20]]]); B.advertise('/lane_follower', '/cmd_vel', 'geometry_msgs/msg/Twist'); this.laneIn = { err: null, t: -9, light: 'none' }; this.unLane = [B.subscribe('/lane_follower', '/lane_error', 'std_msgs/msg/Float64', (m) => { this.laneIn.err = +m.data; this.laneIn.t = this.t; }), B.subscribe('/lane_follower', '/traffic_light', 'std_msgs/msg/String', (m) => { this.laneIn.light = String(m.data); })]; if (this.beh.nav) this.setBeh('nav', false); }
       else { (this.unLane || []).forEach(u => u()); B.removeNode('/lane_follower'); this.teleop(0, 0, 0); }
@@ -340,9 +444,10 @@ class LimoSim extends SnoSim {
     this.lightStep(dt);
     this.publish(dt);
     this.missionTick(dt);
+    if (this.fix) SnoFix.tick(this, dt);
   }
   baseCtl(h) {
-    const D = LIMO_DIM, live = this.cmdLive(this.P0('cmd_timeout')), vmax = this.P0('max_linear_speed'), wmax0 = this.P0('max_angular_speed'), m = this.mode;
+    const D = LIMO_DIM, up = !!this.procs.base, live = up && this.cmdLive(this.P0('cmd_timeout')), vmax = up ? this.P0('max_linear_speed') : 0, wmax0 = up ? this.P0('max_angular_speed') : 0, m = this.mode;
     const tvx = live ? clampN(this.cmd.vx, -vmax, vmax) : 0, tvy = live && m === 'mecanum' ? clampN(this.cmd.vy, -vmax * 0.7, vmax * 0.7) : 0, wmax = m === 'tracked' ? Math.min(wmax0, 1.8) : wmax0, twz = live ? clampN(this.cmd.wz, -wmax, wmax) : 0;
     const c = this.cmdV; c[0] = approach(c[0], tvx, 1.6 * h); c[1] = approach(c[1], tvy, 1.6 * h); c[2] = approach(c[2], twz, 7 * h);
     const rb = this.rb, r = D.wr, a = D.wb / 2, b = D.track / 2, pts = [[a, b], [a, -b], [-a, b], [-a, -b]];
@@ -416,22 +521,26 @@ class LimoSim extends SnoSim {
   }
   behExtra() { }
   scan() {
+    if (!this.procs.lidar) { this.ranges.fill(Infinity); return; }
     const maxR = this.P('/ydlidar_node', 'range_max'), L = this.kin.T.laser_link || this.Tb, ox = L[3], oy = L[7], n = 360, inc = 2 * Math.PI / n;
     for (let i = 0; i < n; i++) { const r = this.cw.raycast(ox, oy, this.th - Math.PI + i * inc, maxR); this.ranges[i] = r < 0.1 ? 0.1 : r; }
     this.extraScan(ox, oy, inc, maxR);
-    this.pub('/ydlidar_node', '/scan', 'sensor_msgs/msg/LaserScan', { header: { stamp: stampNow(), frame_id: 'laser_link' }, angle_min: -3.141593, angle_max: +(Math.PI - inc).toFixed(6), angle_increment: +inc.toFixed(6), time_increment: 0, scan_time: 0.1, range_min: 0.1, range_max: maxR, ranges: this.ranges.map(r => Number.isFinite(r) ? +r.toFixed(3) : Infinity), intensities: [] });
+    this.pub('/ydlidar_node', this.tn.scan, 'sensor_msgs/msg/LaserScan', { header: { stamp: stampNow(), frame_id: String(this.P('/ydlidar_node', 'frame_id') || '') }, angle_min: -3.141593, angle_max: +(Math.PI - inc).toFixed(6), angle_increment: +inc.toFixed(6), time_increment: 0, scan_time: 0.1, range_min: 0.1, range_max: maxR, ranges: this.ranges.map(r => Number.isFinite(r) ? +r.toFixed(3) : Infinity), intensities: [] });
   }
   extraScan() { }
   onSlamScan(m) {
-    const L = this.kin.T.laser_link; if (!L) return;
-    this.slam.update(L[3], L[7], this.th, m.ranges.map(r => r == null ? Infinity : r), m.angle_increment, m.angle_min, m.range_max);
+    const fr = (m.header && m.header.frame_id) || '', Tl = this.lookup(this.kin.root, fr);
+    if (!Tl) { this.warnEvery('slam_tf', 3, '/slam_toolbox', `Failed to compute laser pose, aborting initialization ("${fr || '(empty)'}" passed to lookupTransform argument source_frame does not exist. )`); return; }
+    const Tw = K3.mul(K3.fromRPY(this.x, this.y, 0, 0, 0, this.th), Tl);
+    this.slam.update(Tw[3], Tw[7], Math.atan2(Tw[4], Tw[0]), m.ranges.map(r => r == null ? Infinity : r), m.angle_increment, m.angle_min, m.range_max);
+    if (this.fix) this.fix.stats.slam++;
     this.coverage = Math.min(1, this.slam.known / (this.cw.gw * this.cw.gh * 0.85));
     if (this.def.mSlam && this.coverage >= 0.7) this.complete(this.def.mSlam);
   }
   pubMap() {
     const g = this.slam, data = new Array(g.w * g.h);
     for (let j = 0; j < g.h; j++) for (let i = 0; i < g.w; i++) data[j * g.w + i] = g.cell(i, j);
-    this.pub('/slam_toolbox', '/map', 'nav_msgs/msg/OccupancyGrid', { header: { stamp: stampNow(), frame_id: 'map' }, info: { map_load_time: stampNow(), resolution: g.res, width: g.w, height: g.h, origin: { position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } } }, data });
+    this.pub('/slam_toolbox', this.tn.map || '/map', 'nav_msgs/msg/OccupancyGrid', { header: { stamp: stampNow(), frame_id: 'map' }, info: { map_load_time: stampNow(), resolution: g.res, width: g.w, height: g.h, origin: { position: { x: 0, y: 0, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } } }, data });
   }
   laneDetect() {
     const la = this.P('/lane_detector', 'lookahead') || 0.3, px = this.x + Math.cos(this.th) * la, py = this.y + Math.sin(this.th) * la, P = this.lane;
@@ -513,30 +622,31 @@ class LimoSim extends SnoSim {
   }
   cmdNav(vx, vy, w) { this.pub('/navigator', '/cmd_vel', 'geometry_msgs/msg/Twist', { linear: { x: +vx.toFixed(3), y: +vy.toFixed(3), z: 0 }, angular: { x: 0, y: 0, z: +w.toFixed(3) } }); }
   publish(dt) {
-    const c = '/limo_base';
+    const c = '/limo_base', tn = this.tn;
+    if (!this.procs.base) { this.publishExtra(dt); return; }
     if (this.every('odom', dt, 0.05)) {
       // /odom and odom -> base_footprint come from the wheel encoders; localization (SLAM or the nav stack) adds map -> odom
       const st = stampNow(), O = this.odom, qz = Math.sin(O.th / 2), qw = Math.cos(O.th / 2), To = K3.fromRPY(O.x, O.y, 0, 0, 0, O.th);
-      this.pub(c, '/odom', 'nav_msgs/msg/Odometry', { header: { stamp: st, frame_id: 'odom' }, child_frame_id: 'base_footprint', pose: { pose: { position: { x: +O.x.toFixed(4), y: +O.y.toFixed(4), z: 0 }, orientation: { x: 0, y: 0, z: qz, w: qw } }, covariance: zeros36() }, twist: { twist: { linear: { x: +O.v.toFixed(4), y: +O.vy.toFixed(4), z: 0 }, angular: { x: 0, y: 0, z: +O.w.toFixed(4) } }, covariance: zeros36() } });
-      const tfs = [['odom', 'base_footprint', To]]; if (this.beh.slam || this.beh.nav) tfs.unshift(['map', 'odom', this.mapToOdom()]);
-      this.pub(c, '/tf', 'tf2_msgs/msg/TFMessage', this.tfMsg(tfs));
+      this.pub(c, tn.odom, 'nav_msgs/msg/Odometry', { header: { stamp: st, frame_id: 'odom' }, child_frame_id: 'base_footprint', pose: { pose: { position: { x: +O.x.toFixed(4), y: +O.y.toFixed(4), z: 0 }, orientation: { x: 0, y: 0, z: qz, w: qw } }, covariance: zeros36() }, twist: { twist: { linear: { x: +O.v.toFixed(4), y: +O.vy.toFixed(4), z: 0 }, angular: { x: 0, y: 0, z: +O.w.toFixed(4) } }, covariance: zeros36() } });
+      this.pub(c, '/tf', 'tf2_msgs/msg/TFMessage', this.tfMsg([['odom', 'base_footprint', To]]));
+      const loc = this.beh.slam ? '/slam_toolbox' : this.beh.nav ? '/navigator' : null; if (loc) this.pub(loc, '/tf', 'tf2_msgs/msg/TFMessage', this.tfMsg([['map', 'odom', this.mapToOdom()]]));
     }
     if (this.every('imu', dt, 0.05)) {
       const rb = this.rb, T = rb.T[0], v = [rb.v[3], rb.v[4], rb.v[5]], p = this.imuPrev, ddt = p ? Math.max(1e-3, this.t - p.t) : 1, a = p ? [(v[0] - p.v[0]) / ddt, (v[1] - p.v[1]) / ddt, (v[2] - p.v[2]) / ddt + 9.81] : [0, 0, 9.81]; this.imuPrev = { t: this.t, v };
       const Ti = K3.inv(T), wb = K3.rot(Ti, rb.v[0], rb.v[1], rb.v[2]), ab = K3.rot(Ti, a[0], a[1], a[2]), q = K3.quat(T), nz = this.noise ? this.noise.imu : 0, rn = () => nz * (Math.random() * 2 - 1);
-      this.pub(c, '/imu', 'sensor_msgs/msg/Imu', { header: { stamp: stampNow(), frame_id: 'imu_link' }, orientation: q, orientation_covariance: new Array(9).fill(0), angular_velocity: { x: +(wb[0] + rn() * 0.05).toFixed(4), y: +(wb[1] + rn() * 0.05).toFixed(4), z: +(wb[2] + rn() * 0.05).toFixed(4) }, angular_velocity_covariance: new Array(9).fill(0), linear_acceleration: { x: +(ab[0] + rn()).toFixed(3), y: +(ab[1] + rn()).toFixed(3), z: +(ab[2] + rn()).toFixed(3) }, linear_acceleration_covariance: new Array(9).fill(0) });
+      this.pub(c, tn.imu, 'sensor_msgs/msg/Imu', { header: { stamp: stampNow(), frame_id: 'imu_link' }, orientation: q, orientation_covariance: new Array(9).fill(0), angular_velocity: { x: +(wb[0] + rn() * 0.05).toFixed(4), y: +(wb[1] + rn() * 0.05).toFixed(4), z: +(wb[2] + rn() * 0.05).toFixed(4) }, angular_velocity_covariance: new Array(9).fill(0), linear_acceleration: { x: +(ab[0] + rn()).toFixed(3), y: +(ab[1] + rn()).toFixed(3), z: +(ab[2] + rn()).toFixed(3) }, linear_acceleration_covariance: new Array(9).fill(0) });
     }
-    if (this.every('status', dt, 0.1)) this.pub(c, '/limo_status', 'limo_msgs/msg/LimoStatus', { header: { stamp: stampNow(), frame_id: 'base_link' }, vehicle_state: this.bumping ? 1 : 0, control_mode: 1, battery_voltage: +(12.2 - this.t * 0.0004).toFixed(2), error_code: 0, motion_mode: LIMO_MODES.find(m => m[0] === this.mode)[3] });
+    if (this.every('status', dt, 0.1)) this.pub(c, tn.status, 'limo_msgs/msg/LimoStatus', { header: { stamp: stampNow(), frame_id: 'base_link' }, vehicle_state: this.bumping ? 1 : 0, control_mode: 1, battery_voltage: +(12.2 - this.t * 0.0004).toFixed(2), error_code: 0, motion_mode: LIMO_MODES.find(m => m[0] === this.mode)[3] });
     this.publishExtra(dt);
   }
   publishExtra() { }
   // localization: the map -> odom correction that makes odom + correction = the robot's true pose
   mapToOdom() { const O = this.odom; return K3.mul(K3.fromRPY(this.x, this.y, 0, 0, 0, this.th), K3.inv(K3.fromRPY(O.x, O.y, 0, 0, 0, O.th))); }
-  frames() { const f = ['odom', ...this.kin.links]; if (this.beh.slam || this.beh.nav) f.unshift('map'); return f; }
-  lookup(a, b) {
-    const O = this.odom, To = K3.fromRPY(O.x, O.y, 0, 0, 0, O.th), Tr = this.kin.T, rel = (n) => n === 'map' ? (this.beh.slam || this.beh.nav ? K3.inv(this.mapToOdom()) : K3.I()) : n === 'odom' ? K3.I() : K3.mul(To, K3.mul(K3.inv(Tr[this.kin.root]), Tr[n]));
-    const A = Tr[a] || a === 'odom' || a === 'map' ? rel(a) : null, B = Tr[b] || b === 'odom' || b === 'map' ? rel(b) : null; return A && B ? K3.mul(K3.inv(A), B) : null;
+  frames() {
+    const out = new Set(['map', 'odom', this.kin.root, ...this.kin.links]); this.tfStatic.forEach(m => m.forEach((v, c) => { out.add(c); out.add(v.parent); }));
+    return [...out].filter(f => this.poseOf(f));
   }
+  lookup(a, b) { const A = this.poseOf(a), B = this.poseOf(b); return A && B ? K3.mul(K3.inv(A), B) : null; }
   focusPos() { return [this.x, this.y, 0.12]; }
   focusYaw() { return this.th; }
   /* ---------- missions ---------- */
@@ -678,7 +788,7 @@ class LimoSim extends SnoSim {
   controlExtra() { }
   tickTab(tab) {
     const root = SnoUI.root; if (!root || tab !== 'control') { if (root && tab === 'arm' && this.tickArm) this.tickArm(root); return; }
-    const el = $('.sno-read', root); if (el) { const T = this.bus.topics.get('/cmd_vel'), act = this.bus.active('/cmd_vel'), m = T && T.last; el.innerHTML = `/cmd_vel ${act ? `<span style="color:var(--term-green)">● from ${esc(T.lastFrom || '')}</span>` : '<span style="color:var(--term-dim)">○ idle</span>'}<br>linear.x <b>${m ? pyFloat(+(+m.linear.x).toFixed(2)) : '0.0'}</b>  linear.y <b>${m ? pyFloat(+(+m.linear.y).toFixed(2)) : '0.0'}</b>  angular.z <b>${m ? pyFloat(+(+m.angular.z).toFixed(2)) : '0.0'}</b><br>/limo_status motion_mode <b>${LIMO_MODES.find(x => x[0] === this.mode)[3]}</b>${this.beh.nav ? `  ·  nav <b>${esc(this.navState)}</b>` : ''}${this.beh.slam ? `  ·  mapped <b>${Math.round((this.coverage || 0) * 100)}%</b>` : ''}${this.lane ? `  ·  lane_error <b>${this.laneErr == null ? 'lost' : this.laneErr.toFixed(3)}</b>` : ''}${this.lastWarn ? `<br><span style="color:var(--term-yellow)">${esc(this.lastWarn)}</span>` : ''}`; }
+    const el = $('.sno-read', root); if (el) { const T = this.bus.topics.get('/cmd_vel'), act = this.bus.active('/cmd_vel'), m = T && T.last && (T.last.twist || T.last); el.innerHTML = `/cmd_vel ${act ? `<span style="color:var(--term-green)">● from ${esc(T.lastFrom || '')}</span>` : '<span style="color:var(--term-dim)">○ idle</span>'}<br>linear.x <b>${m ? pyFloat(+(+m.linear.x).toFixed(2)) : '0.0'}</b>  linear.y <b>${m ? pyFloat(+(+m.linear.y).toFixed(2)) : '0.0'}</b>  angular.z <b>${m ? pyFloat(+(+m.angular.z).toFixed(2)) : '0.0'}</b><br>/limo_status motion_mode <b>${LIMO_MODES.find(x => x[0] === this.mode)[3]}</b>${this.beh.nav ? `  ·  nav <b>${esc(this.navState)}</b>` : ''}${this.beh.slam ? `  ·  mapped <b>${Math.round((this.coverage || 0) * 100)}%</b>` : ''}${this.lane ? `  ·  lane_error <b>${this.laneErr == null ? 'lost' : this.laneErr.toFixed(3)}</b>` : ''}${this.lastWarn ? `<br><span style="color:var(--term-yellow)">${esc(this.lastWarn)}</span>` : ''}`; }
     const cv = $('.minimap', root); if (cv) this.drawMap(cv);
   }
   drawMap(cv) {

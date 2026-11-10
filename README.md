@@ -14,7 +14,7 @@ A game-like ROS 2 course that runs entirely in the browser, in a single web page
 |---|---|
 | **Learn** | 12 units, 26 lessons and 153 exercises on ROS 2 Jazzy: the command line, publishers and subscribers, services, custom interfaces, parameters, launch files and TF2, in Python and C++, ending with a driver node for a microcontroller. Lessons are short animated scenes followed by a mix of exercise types (multiple choice, fill in the code, spot the bug, order the steps, drive the turtle). |
 | **Robot Lab** | A 2D robot with a live ROS 2 graph. Use `ros2 topic echo`, `ros2 param set` and friends in the terminal, or write Python nodes with an rclpy-style API. Python runs in your browser through Pyodide. |
-| **SnoBots Robots** | Physics simulators of a Hiwonder AiNex (24-joint small humanoid), a Unitree R1 (humanoid), an AgileX LIMO (four wheel modes) and a LIMO Cobot (LIMO with a 6-axis arm). Each has missions, a terminal, a Python code tab and a live topic graph. |
+| **SnoBots Robots** | Physics simulators of a Hiwonder AiNex (24-joint small humanoid), a Unitree R1 (humanoid), an AgileX LIMO (four wheel modes) and a LIMO Cobot (LIMO with a 6-axis arm). Each has missions, a terminal, a Python code tab and a live topic graph. LIMO also has **broken-robot missions**: tickets where the robot starts with a fault that you fix with `ros2` commands. |
 | **Library** | Books and guides to read inside the app. It has a PDF reader with search (every match highlighted on the page, plus a results list), a contents panel, zoom, selectable text and a saved place in every book. Readers can also open their own PDFs, which stay in their browser. |
 | **Practice, Notebook, Profile** | Review rounds, unit notes, XP, streaks and badges. Progress is saved in the browser. |
 
@@ -38,6 +38,24 @@ The simulators run on a small rigid-body engine written for this project, in the
 - **Simulated time.** Python nodes in the simulators run on the simulator's clock (`use_sim_time` is true), and message stamps carry simulated seconds, so pausing the sim pauses your timers too.
 
 Honest limits: the real Unitree R1 walks with a learned (reinforcement-learning) policy, not this controller, and the topic names are simplified for teaching. Always follow the vendor documentation before running code on real hardware.
+
+## Broken-robot missions
+
+LIMO's **Fix it** tab has seven tickets. Each one restarts the robot with a real fault in its ROS graph and a bug report from a teammate. There is no button that fixes it: you find the cause and fix it in the terminal, as you would on a real robot.
+
+![A Fix it ticket: SLAM gets no scans because of a QoS mismatch](docs/screenshots/limo-fix-it.jpg)
+
+| Ticket | The fault | What you practise |
+|---|---|---|
+| The map won't grow | the lidar driver crashed at start-up | `ros2 node list`, `ros2 topic info`, `ros2 run` |
+| LIMO is crawling | `max_linear_speed` left at 0.08 m/s | `ros2 param get/set`, double vs integer |
+| LIMO ignores the joystick | the base still has a remap from a two-robot demo | `ros2 node info`, remapping, `topic_tools relay` |
+| Echo works, SLAM doesn't | the lidar publishes best effort, SLAM wants reliable | `ros2 topic info --verbose`, QoS overrides |
+| Where is the lidar? | nothing publishes `base_link → laser_link` | `tf2_echo`, `/tf_static`, `static_transform_publisher` |
+| Two names for one lidar | scans say `frame_id: laser`, the tree says `laser_link` | `header.frame_id`, read-only parameters |
+| Same topic, different language | the joystick sends `TwistStamped`, the base wants `Twist` | `ros2 topic list -t`, message types |
+
+This works because the simulated graph follows the same rules as ROS 2: the robot's own nodes are processes you can stop and start again with `--ros-args -r … -p …`, a parameter of the wrong type crashes a node, publishers and subscriptions with incompatible QoS never connect (and warn once, like DDS discovery), latched `/tf_static` keeps each publisher's transforms, and the TF tree only contains frames that someone is actually publishing. A ticket checks the live simulation, so any fix that really works counts. Hints cost XP.
 
 ## The Library
 
@@ -76,6 +94,7 @@ npm test
 - `tests/content.test.js` checks the course data: every lesson scene and every exercise answer key.
 - `tests/physics.test.js` checks the engine against textbook answers: resting contact, Coulomb sliding distance, rolling without slipping, free fall of an articulated body, pendulum period.
 - `tests/library.test.js` checks the Library list: shipped books are real PDFs with their covers, and bring-your-own-copy books ship no file.
+- `tests/fix.test.js` opens every broken-robot ticket, checks that its fault is really there, and applies the fixes a ROS developer would try (restarting a node, `param set`, a relay, a static transform). It also checks the QoS, message-type and latching rules the tickets rely on, and that near misses (a transform 9 cm off, driving with `topic pub`) don't count.
 - `tests/robots.test.js` drives the four robots:
   - AiNex stands, walks, turns, kicks, catches a push and is stood back up after a hard one
   - R1 walks at 0.4 m/s, collapses in damping mode and holds a joint in low-level PD mode
@@ -104,6 +123,7 @@ src/
   sno_robots.js     AiNex and R1 specifics
   sno_car.js        LIMO and LIMO Cobot
   sno_defs.js       robot definitions, missions, code templates
+  sno_fix.js        broken-robot missions (Fix it tickets)
   library.js        Library shelf and PDF reader
   app.js            pages and routing
   styles.css        app styles

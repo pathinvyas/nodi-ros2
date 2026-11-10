@@ -220,7 +220,7 @@ function freshState() {
     stats: { answered: 0, correct: 0, bestCombo: 0, perfect: 0, practice: 0, ranCode: 0 },
     settings: { sound: true, voice: false, unlimited: false, unlockAll: false },
     lab: { missions: {}, code: null, tpl: 'avoid', hist: [] },
-    sno: { m: {}, code: {}, tpl: {}, actions: {}, hist: [] },
+    sno: { m: {}, code: {}, tpl: {}, actions: {}, hist: [], fix: {} },
     lib: { pos: {} },
   };
 }
@@ -455,6 +455,8 @@ const BADGES = [
   { id: 'coder', name: 'First node', desc: 'Run your own Python node in the Robot Lab', icon: 'python', k: 'var(--c-topic)', test: () => S.stats.ranCode >= 1 },
   { id: 'legend', name: 'Lab legend', desc: 'Complete every Robot Lab mission', icon: 'trophy', k: '#E0A100', test: () => typeof MISSIONS !== 'undefined' && Object.keys(S.lab.missions).length >= MISSIONS.length },
   { id: 'snobot', name: 'SnoBots rookie', desc: 'Complete a mission on any SnoBots robot', icon: 'snobots', k: '#E5532B', test: () => !!S.sno && Object.values(S.sno.m || {}).some(m => Object.keys(m).length > 0) },
+  { id: 'fixer', name: 'Field engineer', desc: 'Fix a broken robot with ros2 commands', icon: 'bug', k: '#D93A3A', test: () => !!S.sno && Object.keys(S.sno.fix || {}).length >= 1 },
+  { id: 'oncall', name: 'On call', desc: 'Fix every broken-robot ticket on LIMO', icon: 'tools', k: '#0D93B0', test: () => !!S.sno && typeof FIX_TICKETS !== 'undefined' && FIX_TICKETS.limo.every(t => (S.sno.fix || {})['limo:' + t.id]) },
   { id: 'fleet', name: 'Fleet commander', desc: 'Complete a mission on all four SnoBots robots', icon: 'snobots', k: '#2F6FD0', test: () => !!S.sno && ['ainex', 'r1', 'limo', 'cobot'].every(r => Object.keys((S.sno.m || {})[r] || {}).length > 0) },
   { id: 'grad', name: 'ROS 2 graduate', desc: 'Pass the final exam', icon: 'sparkle', k: 'var(--accent)', test: () => !!S.final },
 ];

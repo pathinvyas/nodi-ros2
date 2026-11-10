@@ -405,6 +405,13 @@ class SnoSim {
     this.def = def; this.id = def.id; this.bus = makeBus(); this.started = false; this.t = 0; this.tab = def.tabs[0][0];
     this.pyLines = []; this.errLine = 0; this.rates = {}; this.selTopic = null; this.topicView = 'list';
     this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' };
+    this.procs = {}; this.procTerm = {}; this.logs = []; this.fix = null;
+    // DDS discovery warns once on each side when a publisher and a subscription cannot agree on QoS
+    this.bus.onClash = (pub, sub, topic, policy) => {
+      const vis = (n) => { const nd = this.bus.nodes.get(n); return nd && !nd.hidden; };
+      if (vis(sub)) this.log(sub, 'WARN', `New publisher discovered on topic '${topic}', offering incompatible QoS. No messages will be received from it. Last incompatible policy: ${policy}`);
+      if (vis(pub)) this.log(pub, 'WARN', `New subscription discovered on topic '${topic}', requesting incompatible QoS. No messages will be sent to it. Last incompatible policy: ${policy}`);
+    };
     const self = this;
     this.ui = { termState() { if (self.tp) self.tp.state(); }, focusTab(t) { SnoUI.focusTab(t === 'graph' ? 'topics' : t, t === 'graph'); } };
     this.missionApi = { event: (t, d) => this.event(t, d) };
@@ -420,6 +427,34 @@ class SnoSim {
     return { bus: this.bus, missions: this.missionApi, ui: this.ui, prompt: `learner@${this.id}-sim:~$`, help: this.def.help, pkgs: this.pkgs(), frames: this.frames(), graphTab: 'Topics', hist: () => S.sno.hist, saveHist: (hs) => { S.sno.hist = hs.slice(-50); save({ local: true }); }, run: (T, pkg, r) => this.run(T, pkg, r), launch: (T, pkg, r) => this.launch(T, pkg, r) };
   }
   /* ---------- ROS helpers ---------- */
+  // a node's log line: printed in the terminal that started it, published on /rosout, kept for the Fix it log.
+  // raw: true is a line from the launch system itself ([INFO] [launch]: …), 'out' is a process's own console output
+  log(node, level, text, raw) {
+    const st = stampNow(), name = node.replace(/^\//, ''), line = raw === 'out' ? `[${name}] ${text}` : raw ? `[${level}] [${name}]: ${text}` : `[${level}] [${(st.sec + st.nanosec / 1e9).toFixed(9)}] [${name}]: ${text}`;
+    // in the robot's launch output a node's lines carry the process name, e.g. [limo_base_node-3]
+    const lab = !raw && this.launchLabel && !(this.procTerm && this.procTerm[node]) ? this.launchLabel[node] : '';
+    (this.logs = this.logs || []).push([level, lab ? `[${lab}] ${line}` : line]); if (this.logs.length > 240) this.logs.splice(0, 60);
+    if (!raw && this.bus.nodes.has(node)) this.bus.publish(node, '/rosout', 'rcl_interfaces/msg/Log', { stamp: st, level: { DEBUG: 10, INFO: 20, WARN: 30, ERROR: 40, FATAL: 50 }[level] || 20, name, msg: text, file: '', function: '', line: 0 });
+    const T = this.procTerm && this.procTerm[node]; if (T) T.print(line, level === 'ERROR' || level === 'FATAL' ? 'e' : level === 'WARN' ? 'w' : 'o');
+    if (this.onLog) this.onLog(level, line);
+  }
+  // `--ros-args -r from:=to -p name:=value`
+  static rosArgs(list) {
+    const out = { pos: list, remaps: [], params: {}, bad: [] }, i0 = list.indexOf('--ros-args'); if (i0 < 0) return out;
+    out.pos = list.slice(0, i0);
+    for (let i = i0 + 1; i < list.length; i++) {
+      const a = list[i], kv = (v) => { const k = String(v || '').indexOf(':='); return k > 0 ? [v.slice(0, k), v.slice(k + 2)] : null; };
+      if (a === '-r' || a === '--remap') { const x = kv(list[++i]); if (x) out.remaps.push(x); else out.bad.push(list[i] || a); }
+      else if (a === '-p' || a === '--param') { const x = kv(list[++i]); if (x) out.params[x[0]] = x[1]; else out.bad.push(list[i] || a); }
+      else if (a !== '--') out.bad.push(a);
+    }
+    return out;
+  }
+  // topic names after remapping (this sim runs every node in the root namespace)
+  remapper(rules) {
+    const full = (n) => (String(n).startsWith('/') ? n : '/' + n).replace(/\/+/g, '/');
+    return (name) => { const f = full(name); for (const [a, b] of rules || []) if (!a.startsWith('__') && full(a) === f) return full(b); return f; };
+  }
   node(name, kind, params, opts = {}) {
     const n = this.bus.addNode(name, kind, Object.assign({ onParam: (k, v) => this.onParam(name, k, v) }, opts));
     (params || []).forEach(([k, v, t, range, ro]) => n.params.set(k, { v, t, range, ro }));
@@ -430,8 +465,8 @@ class SnoSim {
   onParam() { return { ok: true }; }
   pub(node, topic, type, msg) { this.bus.publish(node, topic, type, msg); }
   every(key, dt, period) { this.rates[key] = (this.rates[key] || 0) + dt; if (this.rates[key] >= period) { this.rates[key] -= period; if (this.rates[key] > period) this.rates[key] = 0; return true; } return false; }
-  cmdVelSub(node) {
-    this.bus.subscribe(node, '/cmd_vel', 'geometry_msgs/msg/Twist', (m, from) => {
+  cmdVelSub(node, topic = '/cmd_vel') {
+    return this.bus.subscribe(node, topic, 'geometry_msgs/msg/Twist', (m, from) => {
       const n = this.bus.nodes.get(from);
       this.cmd = { vx: +m.linear.x || 0, vy: +m.linear.y || 0, wz: +m.angular.z || 0, t: this.t, src: from, kind: n ? (n.user ? 'user' : n.kind) : '' };
       this.event('cmd_vel', this.cmd);
@@ -439,15 +474,22 @@ class SnoSim {
   }
   cmdLive(timeout) { return this.t - this.cmd.t < timeout; }
   teleop(vx, vy, wz, src = '/teleop_panel') {
-    if (!this.bus.nodes.has(src)) { this.bus.addNode(src, 'teleop'); this.bus.advertise(src, '/cmd_vel', 'geometry_msgs/msg/Twist'); }
+    if (!this.bus.nodes.has(src)) this.node(src, 'teleop', [['publish_stamped_twist', false, 'bool']]);
     this._tele = { vx, vy, wz, src, last: this.t };
-    this.pub(src, '/cmd_vel', 'geometry_msgs/msg/Twist', { linear: { x: vx, y: vy, z: 0 }, angular: { x: 0, y: 0, z: wz } });
+    this.teleSend(src, vx, vy, wz);
   }
-  teleopTick() { const t = this._tele; if (t && (t.vx || t.vy || t.wz) && this.t - t.last > 0.1) { t.last = this.t; this.pub(t.src, '/cmd_vel', 'geometry_msgs/msg/Twist', { linear: { x: t.vx, y: t.vy, z: 0 }, angular: { x: 0, y: 0, z: t.wz } }); } }
+  // like teleop_twist_joy: publish_stamped_twist chooses geometry_msgs/msg/Twist or TwistStamped on /cmd_vel
+  teleSend(src, vx, vy, wz) {
+    const st = !!this.P(src, 'publish_stamped_twist'), type = st ? 'geometry_msgs/msg/TwistStamped' : 'geometry_msgs/msg/Twist';
+    const T = this.bus.topics.get('/cmd_vel'); if (!T || T.pubs.get(src) !== type) this.bus.advertise(src, '/cmd_vel', type);
+    const tw = { linear: { x: vx, y: vy, z: 0 }, angular: { x: 0, y: 0, z: wz } };
+    this.pub(src, '/cmd_vel', type, st ? { header: { stamp: stampNow(), frame_id: 'base_link' }, twist: tw } : tw);
+  }
+  teleopTick() { const t = this._tele; if (t && (t.vx || t.vy || t.wz) && this.t - t.last > 0.1) { t.last = this.t; this.teleSend(t.src, t.vx, t.vy, t.wz); } }
   tfMsg(list) { const st = stampNow(); return { transforms: list.map(([parent, child, T]) => { const q = K3.quat(T); return { header: { stamp: st, frame_id: parent }, child_frame_id: child, transform: { translation: { x: T[3], y: T[7], z: T[11] }, rotation: q } }; }) }; }
   jointStateMsg(names, q, dq) { return { header: { stamp: stampNow(), frame_id: '' }, name: names.slice(), position: names.map(n => +(q[n] || 0).toFixed(5)), velocity: names.map(n => +((dq && dq[n]) || 0).toFixed(4)), effort: [] }; }
   /* ---------- terminal: ros2 run / launch ---------- */
-  pkgs() { return Object.assign({ tf2_ros: ['tf2_echo', 'static_transform_publisher'], teleop_twist_keyboard: ['teleop_twist_keyboard'] }, this.def.pkgs || {}); }
+  pkgs() { return Object.assign({ tf2_ros: ['tf2_echo', 'static_transform_publisher'], teleop_twist_keyboard: ['teleop_twist_keyboard'], topic_tools: ['relay'] }, this.def.pkgs || {}); }
   frames() { return []; }
   lookup() { return null; }
   run(T, pkg, r) {
@@ -455,7 +497,11 @@ class SnoSim {
     if (!pkg) return p('usage: ros2 run <package> <executable>', 'e');
     if (!PK[pkg]) return p(`Package '${pkg}' not found`, 'e');
     const exe = r[0]; if (!exe || !PK[pkg].includes(exe)) return p(exe ? 'No executable found' : 'usage: ros2 run <package> <executable>', 'e');
-    if (exe === 'static_transform_publisher') return p(`[INFO] [static_transform_publisher]: Spinning until stopped (sim frames: ${this.frames().slice(0, 6).join(', ')}, …).`, 'i');
+    const ra = SnoSim.rosArgs(r.slice(1));
+    const key = Object.keys(this.procDefs()).find(k => { const d = this.procDefs()[k]; return d.pkg === pkg && d.exe === exe; });
+    if (key) return this.runProc(T, key, ra);
+    if (exe === 'static_transform_publisher') return this.runStaticTf(T, ra);
+    if (pkg === 'topic_tools' && exe === 'relay') return this.runRelay(T, ra);
     if (exe === 'tf2_echo') {
       const [src, dst] = r.slice(1); if (!src || !dst) return p('Usage: tf2_echo source_frame target_frame [echo_rate]', 'e');
       const node = '/tf2_echo'; B.addNode(node, 'cli'); const un = B.subscribe(node, '/tf', 'tf2_msgs/msg/TFMessage', () => {});
@@ -491,6 +537,94 @@ class SnoSim {
     return this.runExe(T, pkg, exe, r.slice(1));
   }
   runExe(T) { T.print('This executable is not simulated here.', 'w'); }
+  /* ---------- the robot's own nodes, as processes you can stop and start again (ros2 run … --ros-args …) ---------- */
+  procDefs() { return {}; }
+  startProc() { }
+  stopProc() { }
+  // values from -p name:=value are typed like YAML; a double parameter refuses an integer, as rclcpp does
+  procParams(key, given) {
+    const d = this.procDefs()[key], out = {}, errs = [];
+    for (const [k, raw] of Object.entries(given || {})) {
+      const decl = d.params().find(x => x[0] === k);
+      if (!decl) { out[k] = raw; continue; }
+      let v; try { v = parseYaml('[' + raw + ']')[0]; } catch (e) { v = raw; }
+      const vt = typeof v === 'boolean' ? 'bool' : typeof v === 'number' ? (/^[-+]?\d+$/.test(String(raw).trim()) ? 'integer' : 'double') : 'string';
+      if (decl[2] !== vt) { errs.push(`parameter '${k}' has invalid type: Wrong parameter type, parameter {${k}} is of type {${decl[2]}}, setting it to {${vt}} is not allowed.`); continue; }
+      if (d.check) { const why = d.check(k, v); if (why) { errs.push(why); continue; } }
+      out[k] = v;
+    }
+    return { out, errs };
+  }
+  runProc(T, key, ra) {
+    const p = (s, c) => T.print(s, c), d = this.procDefs()[key];
+    if (ra.bad.length) return p(`[ERROR] [rcl]: Couldn't parse remap rule or parameter: '${ra.bad[0]}' (write -r from:=to or -p name:=value after --ros-args)`, 'e');
+    const pp = this.procParams(key, ra.params);
+    if (pp.errs.length) { p(`terminate called after throwing an instance of 'rclcpp::exceptions::InvalidParameterTypeException'\n  what():  ${pp.errs[0]}\n[ros2run]: Aborted`, 'e'); return; }
+    ra.remaps.filter(([a]) => a.startsWith('__')).forEach(([a]) => p(`[sim] ${a} is not supported here: every node runs in the root namespace with its usual name.`, 'd'));
+    const was = this.procs[key];
+    if (was) {
+      const old = was.T;
+      if (old && old !== T && old.proc && old.proc.pk === key) { old.proc = null; old.print(`[sim] ${d.node} was started again from another terminal.`, 'd'); old.ctx.ui.termState(); }
+      else if (!old) p(`[sim] Stopped the robot's own ${d.node} so this one can take over. On a real robot you would first stop the launch file that started it (Ctrl+C).`, 'd');
+    }
+    this.stopProc(key);
+    this.startProc(key, { remaps: ra.remaps, params: pp.out, T });
+    // (pk, not key: a proc's key() is the teleop keyboard handler)
+    T.proc = { name: d.exe, pk: key, stop: () => { if (this.procs[key] && this.procs[key].T === T) { this.stopProc(key); T.print(`[INFO] [${stampSec()}] [rclcpp]: signal_handler(signum=2)`, 'd'); } } };
+    this.event('run', { key, remaps: ra.remaps, params: pp.out });
+  }
+  // tf2_ros static_transform_publisher: Jazzy's --x … --frame-id … style, or the old positional style
+  runStaticTf(T, ra) {
+    const p = (s, c) => T.print(s, c), a = ra.pos, o = { x: 0, y: 0, z: 0, roll: 0, pitch: 0, yaw: 0 }; let q = null, parent = '', child = '', old = false;
+    const num = (v, k) => { const n = parseFloat(v); if (!Number.isFinite(n)) throw new Error(`argument --${k}: expected a number, got '${v}'`); return n; };
+    try {
+      if (a.length && !a[0].startsWith('--')) {
+        old = true; const n = a.length;
+        if (n === 8) { [o.x, o.y, o.z, o.yaw, o.pitch, o.roll] = a.slice(0, 6).map((v, i) => num(v, ['x', 'y', 'z', 'yaw', 'pitch', 'roll'][i])); [parent, child] = a.slice(6); }
+        else if (n === 9) { [o.x, o.y, o.z] = a.slice(0, 3).map(v => num(v, 'x')); q = a.slice(3, 7).map(v => num(v, 'q')); [parent, child] = a.slice(7); }
+        else throw new Error('expected x y z yaw pitch roll frame_id child_frame_id');
+      } else {
+        for (let i = 0; i < a.length; i++) {
+          const k = a[i].replace(/^--/, ''), v = a[++i];
+          if (['x', 'y', 'z', 'roll', 'pitch', 'yaw'].includes(k)) o[k] = num(v, k);
+          else if (['qx', 'qy', 'qz', 'qw'].includes(k)) { q = q || [0, 0, 0, 1]; q[['qx', 'qy', 'qz', 'qw'].indexOf(k)] = num(v, k); }
+          else if (k === 'frame-id') parent = v || ''; else if (k === 'child-frame-id') child = v || '';
+          else throw new Error(`unrecognized arguments: ${a[i - 1]}`);
+        }
+      }
+      if (!parent || !child) throw new Error('the following arguments are required: --frame-id, --child-frame-id');
+      if (parent === child) throw new Error(`frame-id and child-frame-id cannot be the same ('${parent}')`);
+    } catch (e) { return p(`usage: static_transform_publisher [--x X] [--y Y] [--z Z] [--qx QX] [--qy QY] [--qz QZ] [--qw QW] [--roll ROLL] [--pitch PITCH] [--yaw YAW] --frame-id FRAME_ID --child-frame-id CHILD_FRAME_ID\nstatic_transform_publisher: error: ${e.message}`, 'e'); }
+    if (!q) { const cr = Math.cos(o.roll / 2), sr = Math.sin(o.roll / 2), cp = Math.cos(o.pitch / 2), sp = Math.sin(o.pitch / 2), cy = Math.cos(o.yaw / 2), sy = Math.sin(o.yaw / 2); q = [sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy, cr * cp * sy - sr * sp * cy, cr * cp * cy + sr * sp * sy]; }
+    const qn = Math.hypot(...q) || 1; q = q.map(v => v / qn);
+    const id = Array.from({ length: 16 }, () => 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[Math.floor(Math.random() * 62)]).join('');
+    const node = '/static_transform_publisher_' + id, B = this.bus;
+    B.addNode(node, 'tf'); B.topic('/tf_static', 'tf2_msgs/msg/TFMessage').latched = true; B.advertise(node, '/tf_static', 'tf2_msgs/msg/TFMessage', { dur: 'TRANSIENT_LOCAL', depth: 1 });
+    if (old) p(`[WARN] [${stampSec()}] [${node.slice(1)}]: Old-style arguments are deprecated; see --help for new-style arguments`, 'w');
+    const f6 = (v) => `'${v.toFixed(6)}'`;
+    p(`[INFO] [${stampSec()}] [${node.slice(1)}]: Spinning until stopped - publishing transform\ntranslation: (${[o.x, o.y, o.z].map(f6).join(', ')})\nrotation: (${q.map(f6).join(', ')})\nfrom '${parent}' to '${child}'`);
+    B.publish(node, '/tf_static', 'tf2_msgs/msg/TFMessage', { transforms: [{ header: { stamp: stampNow(), frame_id: parent }, child_frame_id: child, transform: { translation: { x: o.x, y: o.y, z: o.z }, rotation: { x: q[0], y: q[1], z: q[2], w: q[3] } } }] });
+    T.proc = { name: 'static_transform_publisher', stop: () => B.removeNode(node) };
+    this.event('static_tf', { parent, child, xyz: [o.x, o.y, o.z], q });
+  }
+  // topic_tools relay: subscribe to one topic and republish every message on another
+  runRelay(T, ra) {
+    const p = (s, c) => T.print(s, c), B = this.bus, [inT, outT] = ra.pos;
+    if (!inT || !outT) return p('usage: ros2 run topic_tools relay <intopic> <outtopic>', 'e');
+    const full = (n) => n.startsWith('/') ? n : '/' + n, src = full(inT), dst = full(outT);
+    if (src === dst) return p('[ERROR] [relay]: input and output topics must differ', 'e');
+    let node = '/relay', k = 1; while (B.nodes.has(node)) node = '/relay_' + (++k);
+    B.addNode(node, 'relay');
+    let un = null, iv = null;
+    const hook = () => {
+      const ty = B.types(src).find(t => [...(B.topics.get(src) || { pubs: new Map() }).pubs.values()].includes(t)); if (!ty) return false;
+      B.advertise(node, dst, ty); un = B.subscribe(node, src, ty, (m) => B.publish(node, dst, ty, m));
+      p(`[INFO] [${stampSec()}] [${node.slice(1)}]: Relaying ${src} -> ${dst} (${ty})`); return true;
+    };
+    if (!hook()) { p(`[INFO] [${stampSec()}] [${node.slice(1)}]: Waiting for a publisher on ${src} to learn its type…`, 'd'); iv = setInterval(() => { if (hook()) { clearInterval(iv); iv = null; } }, 400); }
+    T.proc = { name: 'relay', stop: () => { if (iv) clearInterval(iv); if (un) un(); B.removeNode(node); } };
+    this.event('relay', { src, dst, node });
+  }
   launch(T, pkg, r) {
     const p = (s, c) => T.print(s, c), PK = this.pkgs();
     if (!pkg || !r[0]) return p('usage: ros2 launch <package> <launch_file> [args...]', 'e');
@@ -573,7 +707,8 @@ class SnoSim {
 
 /* ------------------------------ generic panels shared by every robot ------------------------------ */
 const SnoPanels = {
-  term(sim, body) { sim.tp.mount(body); },
+  term(sim, body) { if (sim.fix) SnoFix.strip(sim, body); sim.tp.mount(body); },
+  fix(sim, body) { SnoFix.panel(sim, body); },
   code(sim, body) {
     const tpls = sim.def.py, key = sim.id; let tpl = S.sno.tpl[key] || Object.keys(tpls)[0];
     if (!tpls[tpl]) tpl = Object.keys(tpls)[0];
@@ -861,6 +996,7 @@ const SnoUI = {
   },
   renderMissionBar() {
     const sim = this.cur, bar = this.root && $('.mission-bar', this.root); if (!bar) return;
+    if (sim.fix) return SnoFix.bar(sim, bar);
     const m = sim.current(), n = sim.def.missions.filter(x => sim.done(x.id)).length;
     if (!m) { bar.innerHTML = `${icon('trophy')}<div class="grow"><div class="mt">All ${sim.def.missions.length} ${esc(sim.def.name)} missions complete!</div><div class="mh">Try writing your own node in the Code tab, or visit another SnoBots robot.</div></div>`; return; }
     bar.innerHTML = `${icon('flag')}<div class="grow"><div class="mt">Mission ${sim.def.missions.indexOf(m) + 1} of ${sim.def.missions.length}: ${esc(m.title)} <span class="chip" style="margin-left:6px">+${m.xp} XP</span></div><div class="mh">${md(m.text)}</div></div><span class="sub tabnum" style="color:var(--muted);font-size:13px">${n} done</span>`;
@@ -869,7 +1005,7 @@ const SnoUI = {
   renderTabs() {
     const sim = this.cur, bar = this.root && $('.ltabs', this.root); if (!bar) return; bar.innerHTML = '';
     sim.def.tabs.forEach(([id, ic, label]) => {
-      const left = id === 'missions' ? sim.def.missions.filter(m => !sim.done(m.id)).length : 0;
+      const left = id === 'missions' ? sim.def.missions.filter(m => !sim.done(m.id)).length : id === 'fix' ? SnoFix.left(sim) : 0;
       const b = h('button', { class: 'ltab', role: 'tab', id: 'st-' + id, 'aria-selected': String(sim.tab === id), 'aria-controls': 'sno-panel', html: icon(ic) + label + (left ? `<span class="cnt">${left}</span>` : '') });
       b.addEventListener('click', () => { sim.tab = id; this.renderTabs(); this.renderTab(); }); bar.append(b);
     });
