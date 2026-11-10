@@ -12,7 +12,7 @@ function loadModules(files, names) {
 
 // The four SnoBots simulators with their ROS bus, minus everything that touches the page.
 function loadSims() {
-  const files = ['sno_kin.js', 'sno_phys.js', 'sno_walk.js', 'sno_humanoid.js', 'sno_robots.js', 'sno_car.js', 'sno_defs.js', 'sno_fix.js'];
+  const files = ['sno_kin.js', 'sno_phys.js', 'sno_walk.js', 'sno_humanoid.js', 'sno_robots.js', 'sno_car.js', 'sno_defs.js', 'sno_fix.js', 'sno_vision.js'];
   const code = files.map(read).join('\n;\n');
   const lab = read('lab.js'), core = read('sno_core.js');
   const busSrc = lab.slice(lab.indexOf('const QOS_DEF'), lab.indexOf('const Bus = makeBus();'));
@@ -25,7 +25,7 @@ function loadSims() {
     function stampNow(){return {sec:0,nanosec:0}}function stampSec(){return '0.000000000'}function zeros36(){return new Array(36).fill(0)}class TermPanel{constructor(){}}
     function snoPhysViz(){} const document=undefined; const IFACES={};\n`;
   return new Function(stub + busSrc + '\n' + simSrc + '\n' + code +
-    '\nreturn { SNO_DEFS, K3, SnoFix, FIX_TICKETS, S, getXP: () => XP };')();
+    '\nreturn { SNO_DEFS, K3, SnoFix, FIX_TICKETS, SnoVision, ARUCO_4X4, S, getXP: () => XP };')();
 }
 
 // Make a simulator ready to step, the way the app does when you open its page.

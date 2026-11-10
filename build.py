@@ -6,7 +6,7 @@ SRC = ROOT / 'src'
 LIB = ROOT / 'library'
 OUT = ROOT / 'dist' / 'index.html'
 read = lambda n: (SRC / n).read_text(encoding='utf-8')
-js = '\n'.join(read(n) for n in ['core.js', 'anim.js', 'content1.js', 'content2.js', 'lesson.js', 'lab.js', 'sno_kin.js', 'sno_phys.js', 'sno_walk.js', 'sno_core.js', 'sno_humanoid.js', 'sno_robots.js', 'sno_car.js', 'sno_defs.js', 'sno_fix.js', 'library.js', 'app.js']) + '\nApp.init();\n'
+js = '\n'.join(read(n) for n in ['core.js', 'anim.js', 'content1.js', 'content2.js', 'lesson.js', 'lab.js', 'sno_kin.js', 'sno_phys.js', 'sno_walk.js', 'sno_core.js', 'sno_humanoid.js', 'sno_robots.js', 'sno_car.js', 'sno_defs.js', 'sno_fix.js', 'sno_vision.js', 'library.js', 'app.js']) + '\nApp.init();\n'
 css = read('styles.css') + '\n' + read('sno.css') + '\n' + read('library.css')
 # Library covers are inlined as data URIs; the PDFs themselves are copied next to index.html (dist/library/)
 def cover(m):

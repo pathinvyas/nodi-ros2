@@ -101,7 +101,7 @@ class SnoView {
   constructor(wrap, o) {
     this.wrap = wrap; this.o = Object.assign({ dist: 1.4, az: -2.4, el: 0.42, target: [0, 0, 0.2], minDist: 0.25, maxDist: 14, shadow: 1.6, grid: [6, 60], fog: [6, 24], ground: true }, o);
     this.tgt = this.o.target.slice(); this.dist = this.o.dist; this.az = this.o.az; this.el = this.o.el; this.follow = true; this.ready = false;
-    this.pips = []; this.pipIdx = 0; this.pipOn = this.o.pipOn !== false; this.ptrs = new Map(); this.onClick = null; this.followPos = null;
+    this.pips = []; this.pipIdx = 0; this.pipOn = this.o.pipOn !== false; this.ptrs = new Map(); this.onClick = null; this.followPos = null; this.cams = [];
   }
   init(T) {
     this.T = T;
@@ -122,7 +122,8 @@ class SnoView {
     sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.015 * sb; S3.add(sun); S3.add(sun.target);
     if (this.o.ground) {
       this.groundMat = new T.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, metalness: 0 });
-      const g = this.groundMesh = new T.Mesh(new T.PlaneGeometry(240, 240), this.groundMat); g.receiveShadow = true; g.position.z = -0.0005; this.world.add(g);
+      // tiled, not one huge quad: two 240 m triangles lose depth precision near a low camera and poke through the arena floor
+      const g = this.groundMesh = new T.Mesh(new T.PlaneGeometry(240, 240, 24, 24), this.groundMat); g.receiveShadow = true; g.position.z = -0.0005; this.world.add(g);
       if (this.o.grid) { const [gs, gd] = this.o.grid; this.grid = new T.GridHelper(gs, gd, 0x888888, 0x888888); this.grid.material.transparent = true; this.grid.material.opacity = 0.55; this.grid.position.y = 0.0006;
       if (this.o.gridAt) this.grid.position.set(this.o.gridAt[0], 0.0006, -this.o.gridAt[1]);
       S3.add(this.grid); }
@@ -216,6 +217,24 @@ class SnoView {
     if (o.xyz) cam.position.set(o.xyz[0], o.xyz[1], o.xyz[2]);
     cam.layers.set(0); link.add(cam);
     const p = Object.assign({ cam, label: 'camera', depth: false }, o); this.pips.push(p); return p;
+  }
+  // an onboard camera for sensor_msgs/Image: renders off screen at its own resolution, the way the robot sees the scene
+  addCamera(link, o) {
+    const T = this.T, cam = new T.PerspectiveCamera(o.vfov || 56, o.w / o.h, o.near || 0.02, o.far || 30);
+    cam.quaternion.setFromRotationMatrix(new T.Matrix4().makeBasis(new T.Vector3(0, -1, 0), new T.Vector3(0, 0, 1), new T.Vector3(-1, 0, 0))); cam.layers.set(0); link.add(cam);
+    const rt = new T.WebGLRenderTarget(o.w, o.h, { minFilter: T.LinearFilter, magFilter: T.LinearFilter, format: T.RGBAFormat, encoding: T.sRGBEncoding });
+    const C = { cam, rt, w: o.w, h: o.h, px: new Uint8Array(o.w * o.h * 4) }; this.cams.push(C); return C;
+  }
+  // render one frame and return it as rgb8, top row first (sensor_msgs/Image order); helpers such as lidar points stay hidden
+  capture(C) {
+    const r = this.r; if (!r || !this.ready) return null;
+    const prev = r.getRenderTarget(), sh = r.shadowMap.autoUpdate, gv = this.grid ? this.grid.visible : false;
+    this.helpers.visible = false; if (this.grid) this.grid.visible = false; r.shadowMap.autoUpdate = false;
+    try { r.setRenderTarget(C.rt); r.setScissorTest(false); r.clear(); r.render(this.scene, C.cam); r.readRenderTargetPixels(C.rt, 0, 0, C.w, C.h, C.px); }
+    finally { r.setRenderTarget(prev); r.shadowMap.autoUpdate = sh; this.helpers.visible = true; if (this.grid) this.grid.visible = gv; }
+    const W = C.w, H = C.h, src = C.px, out = new Uint8Array(W * H * 3);
+    for (let y = 0; y < H; y++) { let i = (H - 1 - y) * W * 4, o = y * W * 3; for (let x = 0; x < W; x++, i += 4, o += 3) { out[o] = src[i]; out[o + 1] = src[i + 1]; out[o + 2] = src[i + 2]; } }
+    return out;
   }
   depthMat() {
     if (this._dm) return this._dm;
@@ -415,7 +434,7 @@ class SnoSim {
     const self = this;
     this.ui = { termState() { if (self.tp) self.tp.state(); }, focusTab(t) { SnoUI.focusTab(t === 'graph' ? 'topics' : t, t === 'graph'); } };
     this.missionApi = { event: (t, d) => this.event(t, d) };
-    this.pyHost = { bus: this.bus, missions: this.missionApi, simTime: () => this.t, saveCode: (c) => { S.sno.code[this.id] = c; save({ local: true }); }, ui: { pyLog: (t, c) => this.pyLog(t, c), pyStatus: () => this.pyStatus(), markErr: (l) => this.markErr(l), clearErr: () => this.clearErr() } };
+    this.pyHost = { bus: this.bus, missions: this.missionApi, simTime: () => this.t, saveCode: (c) => { S.sno.code[this.id] = c; save({ local: true }); }, ui: { pyLog: (t, c) => this.pyLog(t, c), pyStatus: () => this.pyStatus(), markErr: (l) => this.markErr(l), clearErr: () => this.clearErr(), imshow: (d, bin) => SnoVision.imshow(this, d, bin) } };
   }
   start() {
     if (this.started) return; this.started = true;
@@ -709,6 +728,7 @@ class SnoSim {
 const SnoPanels = {
   term(sim, body) { if (sim.fix) SnoFix.strip(sim, body); sim.tp.mount(body); },
   fix(sim, body) { SnoFix.panel(sim, body); },
+  vision(sim, body) { SnoVision.panel(sim, body); },
   code(sim, body) {
     const tpls = sim.def.py, key = sim.id; let tpl = S.sno.tpl[key] || Object.keys(tpls)[0];
     if (!tpls[tpl]) tpl = Object.keys(tpls)[0];
@@ -904,7 +924,7 @@ const SnoUI = {
     v.innerHTML = `<div class="lab-head"><div class="sno-title"><button class="icon-btn sno-back" aria-label="Back to SnoBots Robots">${icon('arrowL')}</button><div><div class="maker">${esc(d.maker)} · ${esc(d.catLabel)}</div><h1>${esc(d.name)} <span class="sim-tag">simulator</span></h1></div></div><div class="topstats" data-stats></div></div>
       <div class="mission-bar" aria-live="polite"></div>
       <div class="lab-grid">
-        <div><div class="arena-wrap sno-view" tabindex="0" aria-label="${esc(d.name)} 3D view. Drag to orbit, scroll or pinch to zoom, right-drag to pan.${d.keysHint ? ' ' + esc(d.keysHint) : ''}"><div class="hud"></div><div class="pip-label" hidden></div><div class="sno-load"><div class="spin"></div><p>Loading the 3D view…</p></div></div>
+        <div><div class="arena-wrap sno-view" tabindex="0" aria-label="${esc(d.name)} 3D view. Drag to orbit, scroll or pinch to zoom, right-drag to pan.${d.keysHint ? ' ' + esc(d.keysHint) : ''}"><div class="hud"></div><div class="pip-label" hidden></div><div class="sno-imshow" hidden></div><div class="sno-load"><div class="spin"></div><p>Loading the 3D view…</p></div></div>
           <div class="arena-tools"></div></div>
         <div class="lab-panel"><div class="ltabs" role="tablist" aria-label="${esc(d.name)} tools"></div><div class="lbody"></div></div>
       </div>`;
@@ -938,7 +958,7 @@ const SnoUI = {
   unmount() {
     cancelAnimationFrame(this.raf); this.raf = 0; clearInterval(this.uiTimer);
     if (this.view) this.view.dispose(); this.view = null;
-    if (this.cur) { this.cur.onKey(null, true, true); if (Py.host === this.cur.pyHost && Py.phase === 'running') Py.stop(); this.cur.onHide(); }
+    if (this.cur) { this.cur.onKey(null, true, true); if (Py.host === this.cur.pyHost && Py.phase === 'running') Py.stop(); if (this.cur.tabOff) { const off = this.cur.tabOff; this.cur.tabOff = null; off(); } this.cur.onHide(); }
     this.cur = null; this.root = null; STAMP_CLOCK = null;
   },
   frame(t) {
@@ -961,7 +981,7 @@ const SnoUI = {
       if (Q.t >= 3) { if (Q.slow > 0.6 * Q.t && (v.ql || 0) < 2) v.setQuality((v.ql || 0) + 1); Q.t = 0; Q.slow = 0; }
     }
     if (v && v.ready) {
-      try { sim.sync(v, v.T); v.setTarget(sim.focusPos(), sim.focusYaw ? sim.focusYaw() : null); v.render(); } catch (e) { console.error(e); v.ready = false; }
+      try { sim.sync(v, v.T); v.setTarget(sim.focusPos(), sim.focusYaw ? sim.focusYaw() : null); v.render(); if (sim.cameraFrame) sim.cameraFrame(v); } catch (e) { console.error(e); v.ready = false; }
       if (v.pips.length) { const p = v.pips[v.pipIdx], R = v.pipRect(); this.pipLabel.hidden = !v.pipOn; if (v.pipOn) { Object.assign(this.pipLabel.style, { right: (v.w - R.x - R.w - 2) + 'px', top: (R.y - 2) + 'px', width: (R.w + 4) + 'px', height: (R.h + 4) + 'px' }); const lb = p.label + (p.depth ? ' · depth' : ''); if (this.pipLabel.dataset.l !== lb) { this.pipLabel.dataset.l = lb; this.pipLabel.innerHTML = `<span>${esc(lb)}</span>`; } } }
     }
     this.raf = requestAnimationFrame((tt) => this.frame(tt));
@@ -971,6 +991,7 @@ const SnoUI = {
     this.hudEl.innerHTML = sim.hud();
     if (sim.tab === 'topics') SnoPanels.topicsLive(sim);
     if (sim.tab === 'phys') SnoPanels.physLive(sim);
+    if (sim.tab === 'vision') SnoVision.tick(sim);
     sim.tickTab(sim.tab);
   },
   renderTools() {
@@ -1005,7 +1026,7 @@ const SnoUI = {
   renderTabs() {
     const sim = this.cur, bar = this.root && $('.ltabs', this.root); if (!bar) return; bar.innerHTML = '';
     sim.def.tabs.forEach(([id, ic, label]) => {
-      const left = id === 'missions' ? sim.def.missions.filter(m => !sim.done(m.id)).length : id === 'fix' ? SnoFix.left(sim) : 0;
+      const left = id === 'missions' ? sim.def.missions.filter(m => !sim.done(m.id)).length : id === 'fix' ? SnoFix.left(sim) : id === 'vision' ? SnoVision.left(sim) : 0;
       const b = h('button', { class: 'ltab', role: 'tab', id: 'st-' + id, 'aria-selected': String(sim.tab === id), 'aria-controls': 'sno-panel', html: icon(ic) + label + (left ? `<span class="cnt">${left}</span>` : '') });
       b.addEventListener('click', () => { sim.tab = id; this.renderTabs(); this.renderTab(); }); bar.append(b);
     });
@@ -1013,7 +1034,7 @@ const SnoUI = {
   renderTab() {
     const sim = this.cur, body = this.root && $('.lbody', this.root); if (!body) return;
     body.innerHTML = ''; body.id = 'sno-panel'; body.setAttribute('role', 'tabpanel'); body.setAttribute('aria-labelledby', 'st-' + sim.tab);
-    sim.paintCode = null;
+    sim.paintCode = null; if (sim.tabOff) { const off = sim.tabOff; sim.tabOff = null; try { off(); } catch (e) { console.error(e); } }
     if (SnoPanels[sim.tab]) SnoPanels[sim.tab](sim, body); else sim.renderTab(sim.tab, body);
   },
   focusTab(t, graph) { const sim = this.cur; if (!sim) return; if (graph) sim.topicView = 'graph'; if (!sim.def.tabs.some(x => x[0] === t)) t = sim.def.tabs[0][0]; sim.tab = t; this.renderTabs(); this.renderTab(); },

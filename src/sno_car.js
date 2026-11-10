@@ -124,6 +124,7 @@ function limoDesc(o = {}) {
   add({ name: 'base_joint', parent: 'base_footprint', child: 'base_link', type: 'fixed', xyz: [0, 0, D.wr] });
   add({ name: 'laser_joint', parent: 'base_link', child: 'laser_link', type: 'fixed', xyz: o.cobot ? [0.135, 0, 0.167] : [0.09, 0, 0.18] });
   add({ name: 'camera_joint', parent: 'base_link', child: 'camera_link', type: 'fixed', xyz: [0.17, 0, 0.085] });
+  add({ name: 'camera_color_optical_joint', parent: 'camera_link', child: 'camera_color_optical_frame', type: 'fixed', rpy: [-Math.PI / 2, 0, -Math.PI / 2] });
   add({ name: 'imu_joint', parent: 'base_link', child: 'imu_link', type: 'fixed', xyz: [0, 0, 0.02] });
   for (const [fx, n] of [[1, 'front'], [-1, 'rear']]) for (const [sy, side] of [[1, 'left'], [-1, 'right']]) {
     const st = `${n}_${side}_steering`, wh = `${n}_${side}_wheel`;
@@ -166,7 +167,7 @@ function cobotDesc() {
 /* ---------- physics: masses, collision shapes and motors (four hub motors, steering servos, arm servos, gripper) ---------- */
 const LIMO_WHEELS = ['front_left', 'front_right', 'rear_left', 'rear_right'];
 function limoPhys(cobot) {
-  const D = LIMO_DIM, coll = { base_footprint: false, laser_link: false, camera_link: false, imu_link: false, base_link: [{ t: 'box', size: [0.322, 0.21, 0.11], xyz: [0, 0, 0.055], tag: 'chassis', mu: 0.5 }] };
+  const D = LIMO_DIM, coll = { base_footprint: false, laser_link: false, camera_link: false, camera_color_optical_frame: false, imu_link: false, base_link: [{ t: 'box', size: [0.322, 0.21, 0.11], xyz: [0, 0, 0.055], tag: 'chassis', mu: 0.5 }] };
   const masses = { base_link: [cobot ? 4.1 : 3.6, [0, 0, 0.05]] };
   LIMO_WHEELS.forEach(w => { coll[w + '_steering_link'] = false; coll[w + '_wheel_link'] = [{ t: 'wheel', size: [D.wr, D.ww / 2], rpy: [-Math.PI / 2, 0, 0], tag: 'wheel', mu: 0.9 }]; masses[w + '_wheel_link'] = [0.16, [0, 0, 0]]; masses[w + '_steering_link'] = [0.05, [0, 0, 0]]; });
   if (cobot) {
@@ -184,6 +185,9 @@ function limoPhys(cobot) {
   };
 }
 
+/* ---------- the front camera's colour stream (sensor_msgs/Image) ---------- */
+const LIMO_CAM = { w: 320, h: 240, vfov: 56, near: 0.02, far: 20 };
+
 /* ---------- arenas ---------- */
 const LIMO_ARENA = {
   W: 6, H: 4,
@@ -192,7 +196,13 @@ const LIMO_ARENA = {
   road: { cx0: 1.5, cx1: 4.5, cy0: 1.4, cy1: 2.6, r: 0.6, w: 0.7, lane: 0.175 },
   light: { x: 3.47, y: 0.27, stop: 3.27 }, slots: [{ id: 'P1', x: 3.95, y: 1.58, yaw: 0, L: 0.5, W: 0.36 }, { id: 'P2', x: 3.95, y: 2.02, yaw: 0, L: 0.5, W: 0.36 }],
   start: [1.6, 0.625, 0],
+  // ArUco markers (DICT_4X4_50, 12 cm black square) at camera height; yaw is the way the marker faces
+  markers: [{ id: 7, x: 5.997, y: 2.0, yaw: Math.PI }, { id: 3, x: 1.5, y: 3.997, yaw: -Math.PI / 2 }, { id: 12, x: 5.0, y: 0.003, yaw: Math.PI / 2 }, { id: 21, x: 0.003, y: 3.0, yaw: 0 }, { id: 5, x: 2.9, y: 2.197, yaw: -Math.PI / 2 }],
+  balls: [{ color: 'red', x: 2.55, y: 0.27 }, { color: 'magenta', x: 0.4, y: 0.35 }],
 };
+// ArUco DICT_4X4_50 codes: the 4 x 4 inner cells row by row, 1 = white (checked against OpenCV's dictionary)
+const ARUCO_4X4 = { 3: 39238, 5: 31181, 7: 50418, 12: 3767, 21: 45099 };
+const ARUCO_SIZE = 0.12, ARUCO_Z = 0.13, BALL_R = 0.05;
 const COBOT_ARENA = {
   W: 5, H: 4,
   boxes: [{ x0: 1.75, y0: 3.55, x1: 2.75, y1: 3.95, h: 0.12, m: 'wood', name: 'pick table' }, { x0: 0.35, y0: 0.9, x1: 1.15, y1: 1.3, h: 0.6, m: 'grey', name: 'shelf' }, { x0: 4.52, y0: 1.2, x1: 4.68, y1: 1.36, h: 0.08, m: 'blue', name: 'blue bin', bin: 'blue' }, { x0: 4.52, y0: 1.92, x1: 4.68, y1: 2.08, h: 0.08, m: 'green', name: 'green bin', bin: 'green' }, { x0: 4.52, y0: 2.64, x1: 4.68, y1: 2.8, h: 0.08, m: 'red', name: 'red bin', bin: 'red' }],
@@ -225,6 +235,8 @@ class LimoSim extends SnoSim {
     this.wheels = LIMO_WHEELS.map(w => ({ w, k: this.rb.ji[w + '_wheel_joint'], s: this.rb.ji[w + '_steering_joint'], g: this.rb.geoms.find(g => g.link === w + '_wheel_link'), sb: this.rb.linkBody[w + '_steering_link'] }));
     this.gains = { kp: this.rb.kp.slice(), kd: this.rb.kd.slice() };
     this.buildStatics(); this.vizF = 0.25; this.vizSize = 0.35;
+    // balls for the camera to find: real rigid bodies that LIMO can push and you can grab (Ctrl+drag)
+    this.balls = (this.A.balls || []).map(b => { const sys = physSphere('ball_' + b.color, BALL_R, 0.12, { mu: 0.7 }); this.world.add(sys); return Object.assign({ sys }, b); });
     this.reset();
   }
   buildStatics() {
@@ -241,9 +253,10 @@ class LimoSim extends SnoSim {
     const [x, y, th] = this.A.start, rb = this.rb;
     for (const n in rb.ji) { const k = rb.ji[n]; rb.q[k] = 0; rb.qt[k] = 0; rb.vt[k] = 0; rb.tff[k] = 0; rb.kp[k] = this.gains.kp[k]; rb.kd[k] = this.gains.kd[k]; }
     rb.setYaw(x, y, 0.0004, th); rb.zeroVel(); this.world.cache.clear(); this.grab = null; if (this.wheels) this.wheels.forEach(W => { W.I = 0; });
+    (this.balls || []).forEach(b => { b.sys.setYaw(b.x, b.y, BALL_R, 0); b.sys.zeroVel(); });
     Object.assign(this, { x, y, th, vx: 0, vy: 0, w: 0, steer: 0, bumps: 0, bumpT: -9, bumping: null, trail: [], otrail: [], wheelA: 0, cmdV: [0, 0, 0] });
     this.odom = { x, y, th, v: 0, vy: 0, w: 0 };
-    this.st = { dist: 0, modes: {}, strafe: 0, cliDist: 0, userDist: 0, lap: 0, laneIdx: -1 };
+    this.st = { dist: 0, modes: {}, strafe: 0, cliDist: 0, userDist: 0, lap: 0, laneIdx: -1, vLine: 0, vLineIdx: -1, ids: new Set(), still: 0, vHz: false, vInfo: false };
     this.light = { t: 0, s: 'green' }; this.goal = null; this.path = null; this.navState = 'idle';
     this.slam.clear(); this.imuPrev = null; this.tf = null;
     this.applyWheelModel();
@@ -262,15 +275,18 @@ class LimoSim extends SnoSim {
   setupRos() {
     this.tn = {}; this.tfStatic = new Map(); const B = this.bus;
     // the TF tree is what is actually being published: static frames from /tf_static, moving links from the robot model
-    B.onPublish = (node, topic, type, msg) => { if (topic === '/tf_static' && msg && msg.transforms) this.noteStatic(node, msg.transforms); };
+    B.onPublish = (node, topic, type, msg) => {
+      if (topic === '/tf_static' && msg && msg.transforms) this.noteStatic(node, msg.transforms);
+      if (topic === '/marker_id' && type === 'std_msgs/msg/Int32' && msg) this.markerSeen(Math.trunc(+msg.data), node);
+    };
     B.onRemove = (node) => { this.tfStatic.delete(node); };
     B.topic('/tf_static', 'tf2_msgs/msg/TFMessage').latched = true;
     this.restoreRobot({});
     if (this.lane) { this.node('/lane_detector', 'vision', [['lookahead', 0.3, 'double', [0.1, 0.8]]]); B.advertise('/lane_detector', '/lane_error', 'std_msgs/msg/Float64'); B.advertise('/lane_detector', '/traffic_light', 'std_msgs/msg/String'); }
     this.setupExtra();
   }
-  staticJoints() { return ['base_joint', 'laser_joint', 'camera_joint', 'imu_joint'].concat(this.def.cobot ? ['arm_mount'] : []); }
-  pkgs() { return Object.assign(super.pkgs(), { robot_state_publisher: ['robot_state_publisher'], limo_base: ['limo_base_node'], ydlidar_ros2_driver: ['ydlidar_ros2_driver_node'], slam_toolbox: ['async_slam_toolbox_node'] }); }
+  staticJoints() { return ['base_joint', 'laser_joint', 'camera_joint', 'camera_color_optical_joint', 'imu_joint'].concat(this.def.cobot ? ['arm_mount'] : []); }
+  pkgs() { return Object.assign(super.pkgs(), { robot_state_publisher: ['robot_state_publisher'], limo_base: ['limo_base_node'], ydlidar_ros2_driver: ['ydlidar_ros2_driver_node'], orbbec_camera: ['orbbec_camera_node'], slam_toolbox: ['async_slam_toolbox_node'] }); }
   // The robot's bringup, the way its launch file starts it: description, lidar transform, base driver, lidar driver.
   // cfg {} is the normal robot; a Fix it ticket passes its fault: cfg.<proc> = false leaves that node out, an object
   // starts it with { params, remaps }, cfg.died names a node that crashes at start-up, cfg.slam adds SLAM, and
@@ -282,7 +298,7 @@ class LimoSim extends SnoSim {
     [...B.nodes.keys()].filter(n => n === '/teleop_panel' || n === '/goal_tool' || /^\/(static_transform_publisher_|relay)/.test(n)).forEach(n => B.removeNode(n));
     this._tele = null; this.keys = {}; this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' }; this.warnT = {}; this.lastWarn = ''; B.clashes.clear();
     const d0 = new Date(), p2 = (v) => String(v).padStart(2, '0'), day = `${d0.getFullYear()}-${p2(d0.getMonth() + 1)}-${p2(d0.getDate())}-${p2(d0.getHours())}-${p2(d0.getMinutes())}-${p2(d0.getSeconds())}`;
-    const keys = ['rsp', 'laser_tf', 'base', 'lidar'].concat(cfg.slam ? ['slam'] : []).filter(k => cfg[k] !== false || cfg.died === k);
+    const keys = ['rsp', 'laser_tf', 'base', 'lidar', 'camera'].concat(cfg.slam ? ['slam'] : []).filter(k => cfg[k] !== false || cfg.died === k);
     this.launchLabel = {};
     this.log('launch', 'INFO', `All log files can be found below /home/learner/.ros/log/${day}-${this.id}-sim-${B.pid}`, true);
     this.log('launch', 'INFO', 'Default logging verbosity is set to INFO', true);
@@ -328,6 +344,15 @@ class LimoSim extends SnoSim {
           this.log(n, 'INFO', '[YDLIDAR] Lidar running correctly! The health status: good'); this.log(n, 'INFO', `Now YDLIDAR is scanning: ${this.tn.scan} in frame '${this.P(n, 'frame_id')}', 10 Hz`);
         },
         stop: () => { this.tn.scan = null; this.ranges.fill(Infinity); } },
+      // the front RGB-D camera (colour stream). Images are rendered only while something subscribes, like a lazy driver
+      camera: { pkg: 'orbbec_camera', exe: 'orbbec_camera_node', node: '/camera/camera', kind: 'driver',
+        params: () => [['camera_name', 'camera', 'string', null, true], ['color_width', LIMO_CAM.w, 'integer', null, true], ['color_height', LIMO_CAM.h, 'integer', null, true], ['color_fps', 10, 'integer', [1, 30]], ['enable_color', true, 'bool']],
+        start: (rec) => {
+          const n = '/camera/camera'; this.tn.img = rec.R('/camera/color/image_raw'); this.tn.info = rec.R('/camera/color/camera_info'); this.camLast = null; this.camDue = null;
+          B.advertise(n, this.tn.img, 'sensor_msgs/msg/Image'); B.advertise(n, this.tn.info, 'sensor_msgs/msg/CameraInfo');
+          this.log(n, 'INFO', `color: ${LIMO_CAM.w}x${LIMO_CAM.h} rgb8 @ ${this.P(n, 'color_fps')} fps on ${this.tn.img}`);
+        },
+        stop: () => { this.tn.img = null; this.tn.info = null; this.camDue = null; } },
       slam: { pkg: 'slam_toolbox', exe: 'async_slam_toolbox_node', node: '/slam_toolbox', kind: 'slam',
         params: () => [['resolution', 0.05, 'double', [0.05, 0.05], true], ['map_update_interval', 1.0, 'double', [0.2, 5]], ['qos_overrides./scan.subscription.reliability', 'reliable', 'string', null, true]],
         check: qosOk,
@@ -438,13 +463,34 @@ class LimoSim extends SnoSim {
     this.behTick(dt);
     const n = 4, h = dt / n, t0 = typeof performance !== 'undefined' ? performance.now() : 0;
     this.world.h = h / 2;
-    for (let i = 0; i < n; i++) { this.baseCtl(h); this.stepExtra(h); if (this.grab) this.grabCtl(); this.world.step(); this.world.step(); }
+    for (let i = 0; i < n; i++) { this.baseCtl(h); this.stepExtra(h); this.ballCtl(); if (this.grab) this.grabCtl(); this.world.step(); this.world.step(); }
     this.phys = this.phys || { ms: 0 }; if (t0) this.phys.ms = this.phys.ms * 0.9 + (performance.now() - t0) * 0.1;
     this.readState(dt);
     this.lightStep(dt);
     this.publish(dt);
+    this.camTick();
     this.missionTick(dt);
     if (this.fix) SnoFix.tick(this, dt);
+  }
+  /* ---------- the camera: camera_info on the sim clock, images rendered by the 3D view when one is due ---------- */
+  camInfo(hd) {
+    const C = LIMO_CAM, f = +((C.h / 2) / Math.tan(C.vfov * Math.PI / 360)).toFixed(4), cx = (C.w - 1) / 2, cy = (C.h - 1) / 2;
+    return { header: hd, height: C.h, width: C.w, distortion_model: 'plumb_bob', d: [0, 0, 0, 0, 0], k: [f, 0, cx, 0, f, cy, 0, 0, 1], r: [1, 0, 0, 0, 1, 0, 0, 0, 1], p: [f, 0, cx, 0, 0, f, cy, 0, 0, 0, 1, 0], binning_x: 0, binning_y: 0, roi: { x_offset: 0, y_offset: 0, height: 0, width: 0, do_rectify: false } };
+  }
+  camTick() {
+    if (!this.procs.camera || !this.tn.info || this.P('/camera/camera', 'enable_color') === false) return;
+    const fps = clampN(+this.P('/camera/camera', 'color_fps') || 10, 1, 30);
+    if (this.camLast != null && this.t >= this.camLast && this.t - this.camLast < 1 / fps - 1e-6) return;
+    this.camLast = this.t;
+    const hd = { stamp: stampNow(), frame_id: 'camera_color_optical_frame' };
+    this.pub('/camera/camera', this.tn.info, 'sensor_msgs/msg/CameraInfo', this.camInfo(hd));
+    this.camDue = hd;
+  }
+  cameraFrame(view) {
+    const hd = this.camDue; if (!hd) return; this.camDue = null;
+    const T = this.tn.img && this.bus.topics.get(this.tn.img); if (!T || !T.subs.size || !this.camCap) return;
+    const data = view.capture(this.camCap); if (!data) return;
+    this.pub('/camera/camera', this.tn.img, 'sensor_msgs/msg/Image', { header: hd, height: LIMO_CAM.h, width: LIMO_CAM.w, encoding: 'rgb8', is_bigendian: 0, step: LIMO_CAM.w * 3, data });
   }
   baseCtl(h) {
     const D = LIMO_DIM, up = !!this.procs.base, live = up && this.cmdLive(this.P0('cmd_timeout')), vmax = up ? this.P0('max_linear_speed') : 0, wmax0 = up ? this.P0('max_angular_speed') : 0, m = this.mode;
@@ -470,6 +516,16 @@ class LimoSim extends SnoSim {
   // skid steering slips: the driver scales the wheel speed difference (effective track width factor)
   skidK() { return this.mode === 'tracked' ? 2.6 : 2.3; }
   stepExtra() { }
+  // rolling resistance and a little drag, so a pushed ball slows down and stops like a real one
+  ballCtl() {
+    for (const b of this.balls || []) {
+      const S = b.sys; if (S.asleep) continue;
+      const T = S.T[0], v = S.ptVel(0, [T[3], T[7], T[11]]), sp = Math.hypot(v[0], v[1]); if (sp < 1e-4) continue;
+      const m = S.totalMass, k = (0.04 * m * 9.81) / sp + 0.4 * m;
+      S.push(0, [0, 0, 0], [-k * v[0], -k * v[1], 0]);
+    }
+  }
+  ballPos(color) { const b = (this.balls || []).find(x => x.color === color); if (!b) return null; const T = b.sys.T[0]; return [T[3], T[7], T[11]]; }
   fk() { this.kin.fk(this.q, this.Tb); }
   readState(dt) {
     const rb = this.rb, T = rb.T[0], D = LIMO_DIM;
@@ -652,6 +708,7 @@ class LimoSim extends SnoSim {
   /* ---------- missions ---------- */
   missionTick() {
     const s = this.st;
+    if (this.A.markers) this.visionTick();
     if (s.dist >= 2) this.complete('m1');
     if (Object.keys(s.modes).filter(k => s.modes[k] >= 0.3).length >= 4) this.complete('m2');
     if (s.strafe >= 0.5) this.complete('m3');
@@ -662,6 +719,37 @@ class LimoSim extends SnoSim {
   }
   event(type, data) {
     if (type === 'cmd' && data === 'echo:/limo_status') this.complete('m4');
+    if (type === 'cmd' && this.A.markers) {
+      if (data === 'hz:/camera/color/image_raw' || data === 'bw:/camera/color/image_raw') this.st.vHz = true;
+      if (data === 'echo:/camera/color/camera_info') this.st.vInfo = true;
+      if (this.st.vHz && this.st.vInfo) this.complete('v1');
+    }
+  }
+  /* ---------- vision missions: checked from the true state of the world ---------- */
+  userDriving() { return this.cmd.kind === 'user' && this.t - this.cmd.t < 1.0; }
+  camPose() { const C = this.kin.T.camera_link; return C ? [C[3], C[7], C[11], Math.atan2(C[4], C[0])] : [this.x, this.y, 0.13, this.th]; }
+  visionTick() {
+    const s = this.st, dt = 1 / 60, P = this.ctrPts || (this.ctrPts = laneLoop(this.A.road, this.A.road.r));
+    // v2: driven by your node along the yellow centre line (either lane, either direction)
+    if (this.userDriving() && Math.abs(this.vx) > 0.02) {
+      let bi = -1, bd = 1e9; const look = (i0, n) => { for (let k = 0; k < n; k++) { const i = ((i0 + k) % P.length + P.length) % P.length, d = (P[i][0] - this.x) ** 2 + (P[i][1] - this.y) ** 2; if (d < bd) { bd = d; bi = i; } } };
+      if (s.vLineIdx >= 0) look(s.vLineIdx - 30, 61); if (bi < 0 || Math.sqrt(bd) > 0.3) look(0, P.length);
+      if (Math.sqrt(bd) < 0.3 && s.vLineIdx >= 0) { let di = bi - s.vLineIdx; if (di < -P.length / 2) di += P.length; if (di > P.length / 2) di -= P.length; if (Math.abs(di) < 30) s.vLine += Math.abs(di) * 0.02; if (s.vLine >= 4) this.complete('v2'); }
+      s.vLineIdx = Math.sqrt(bd) < 0.3 ? bi : -1;
+    }
+    const [cx, cy, , cth] = this.camPose(), still = Math.abs(this.vx) < 0.03 && Math.abs(this.w) < 0.12;
+    s.still = still && this.cmd.kind === 'user' && this.t - this.cmd.t < 3 ? s.still + dt : 0;
+    // v3: stopped in front of the magenta ball, facing it
+    const B = this.ballPos('magenta');
+    if (B) { const d = Math.hypot(B[0] - cx, B[1] - cy), brg = Math.abs(wrapPi(Math.atan2(B[1] - cy, B[0] - cx) - cth)); this.vBall = { d, brg }; if (d > 0.18 && d < 0.5 && brg < 0.18 && s.still > 1) this.complete('v3'); }
+    // v5: docked 0.5 m in front of marker 7, square to it and centred
+    const M = this.A.markers.find(m => m.id === 7);
+    if (M) { const nx = Math.cos(M.yaw), ny = Math.sin(M.yaw), dn = (cx - M.x) * nx + (cy - M.y) * ny, lat = -(cx - M.x) * ny + (cy - M.y) * nx, he = Math.abs(wrapPi(cth - (M.yaw + Math.PI))); this.vDock = { dn, lat, he }; if (Math.abs(dn - 0.5) < 0.05 && Math.abs(lat) < 0.05 && he < 0.105 && s.still > 1) this.complete('v5'); }
+  }
+  // v4: marker IDs your node publishes on /marker_id
+  markerSeen(id, from) {
+    const n = this.bus.nodes.get(from); if (!n || !n.user || !this.A.markers) return;
+    if (this.A.markers.some(m => m.id === id)) { this.st.ids.add(id); if (this.st.ids.size >= 4) this.complete('v4'); }
   }
   /* ---------- 3D ---------- */
   buildScene(view, T) {
@@ -700,6 +788,16 @@ class LimoSim extends SnoSim {
       const L = A.light, box = snoMesh(T, { s: 'box', size: [0.05, 0.06, 0.15], xyz: [L.x, L.y, 0.55], m: 'dark' }, mats); view.world.add(box);
       this.lamps = ['red', 'yellow', 'green'].map((c, i) => { const m = new T.MeshStandardMaterial({ color: new T.Color({ red: '#ff3b30', yellow: '#ffc400', green: '#22c55e' }[c]).convertSRGBToLinear(), emissive: new T.Color({ red: '#ff3b30', yellow: '#ffc400', green: '#22c55e' }[c]).convertSRGBToLinear(), emissiveIntensity: 0.1, roughness: 0.4 }); const s = new T.Mesh(new T.SphereGeometry(0.016, 16, 12), m); s.position.set(L.x - 0.027, L.y, 0.595 - i * 0.045); view.world.add(s); return [c, m]; });
     }
+    // vision props: ArUco markers on the walls (printed on matte paper) and two balls
+    (A.markers || []).forEach(M => {
+      const code = ARUCO_4X4[M.id], cell = 16, tex = snoTex(T, 8 * cell, 8 * cell, (g) => { g.fillStyle = '#fff'; g.fillRect(0, 0, 8 * cell, 8 * cell); g.fillStyle = '#000'; g.fillRect(cell, cell, 6 * cell, 6 * cell); g.fillStyle = '#fff'; for (let i = 0; i < 16; i++) if ((code >> (15 - i)) & 1) g.fillRect((2 + i % 4) * cell, (2 + (i >> 2)) * cell, cell, cell); });
+      tex.magFilter = T.NearestFilter;
+      const pl = new T.Mesh(new T.PlaneGeometry(ARUCO_SIZE * 8 / 6, ARUCO_SIZE * 8 / 6), new T.MeshStandardMaterial({ map: tex, roughness: 0.92, metalness: 0 }));
+      const c = Math.cos(M.yaw), sn = Math.sin(M.yaw);
+      pl.quaternion.setFromRotationMatrix(new T.Matrix4().makeBasis(new T.Vector3(-sn, c, 0), new T.Vector3(0, 0, 1), new T.Vector3(c, sn, 0)));
+      pl.position.set(M.x + c * 0.001, M.y + sn * 0.001, ARUCO_Z); pl.receiveShadow = true; pl.userData.marker = M.id; view.world.add(pl);
+    });
+    this.ballMesh = (this.balls || []).map(b => { const mat = b.color === 'magenta' ? new T.MeshStandardMaterial({ color: new T.Color('#D946EF').convertSRGBToLinear(), roughness: 0.45, metalness: 0.02 }) : mats[b.color]; const m = snoMesh(T, { s: 'sph', size: [BALL_R], m: mat }, mats); m.userData.obj = b; view.world.add(m); return m; });
     // helpers: lidar points, trail, path, goal
     const pg = new T.BufferGeometry(); pg.setAttribute('position', new T.Float32BufferAttribute(new Float32Array(360 * 3), 3));
     this.lidarPts = new T.Points(pg, new T.PointsMaterial({ color: 0xff3355, size: 0.035 })); view.helpers.add(this.lidarPts);
@@ -707,6 +805,7 @@ class LimoSim extends SnoSim {
     this.goalMark = new T.Group(); this.goalMark.add(snoMesh(T, { s: 'cyl', size: [0.08, 0.006], xyz: [0, 0, 0.003], m: 'blue' }, mats)); this.goalMark.add(snoMesh(T, { s: 'box', size: [0.12, 0.02, 0.008], xyz: [0.06, 0, 0.01], m: 'blue' }, mats)); view.helpers.add(this.goalMark);
     this.showRays = true;
     view.addPip(this.model.links.camera_link, { label: 'front depth camera', vfov: 58, near: 0.03, far: 5, depth: false });
+    this.camCap = view.addCamera(this.model.links.camera_link, LIMO_CAM);
     view.onClick = (p) => { if (p[0] < 0 || p[1] < 0 || p[0] > A.W || p[1] > A.H) return; this.sendGoal(p[0], p[1]); Sound.play('tap'); this.event('click_goal'); };
     this.buildExtra(view, T);
   }
@@ -724,7 +823,7 @@ class LimoSim extends SnoSim {
     const rd = A.road; if (!rd) return this.drawFloorExtra(g, X, Y, s);
     const rr = (R, fill, stroke, lw, dash) => { g.beginPath(); g.moveTo(X(rd.cx0), Y(rd.cy0 - R)); g.lineTo(X(rd.cx1), Y(rd.cy0 - R)); g.arc(X(rd.cx1), Y(rd.cy0), R * s, Math.PI / 2, 0, true); g.lineTo(X(rd.cx1 + R), Y(rd.cy1)); g.arc(X(rd.cx1), Y(rd.cy1), R * s, 0, -Math.PI / 2, true); g.lineTo(X(rd.cx0), Y(rd.cy1 + R)); g.arc(X(rd.cx0), Y(rd.cy1), R * s, -Math.PI / 2, -Math.PI, true); g.lineTo(X(rd.cx0 - R), Y(rd.cy0)); g.arc(X(rd.cx0), Y(rd.cy0), R * s, Math.PI, Math.PI / 2, true); g.closePath(); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw * s; g.setLineDash(dash ? dash.map(d => d * s) : []); g.stroke(); g.setLineDash([]); } };
     rr(rd.r + rd.w / 2, '#3B4146'); rr(rd.r - rd.w / 2, '#B9C7B5');
-    rr(rd.r + rd.w / 2 - 0.02, null, '#F4F4F0', 0.022); rr(rd.r - rd.w / 2 + 0.02, null, '#F4F4F0', 0.022); rr(rd.r, null, '#F5B700', 0.018, [0.12, 0.09]);
+    rr(rd.r + rd.w / 2 - 0.02, null, '#F4F4F0', 0.022); rr(rd.r - rd.w / 2 + 0.02, null, '#F4F4F0', 0.022); rr(rd.r, null, '#F5B700', 0.024);
     const L = A.light; g.fillStyle = '#F4F4F0'; g.fillRect(X(L.stop) - 0.025 * s, Y(0.8), 0.035 * s, 0.36 * s);
     for (let i = 0; i < 6; i++) { g.fillStyle = '#F4F4F0'; g.fillRect(X(2.6) + i * 0.065 * s, Y(0.8 + 0.34), 0.035 * s, 0.68 * s); }
     A.slots.forEach(sl => { g.strokeStyle = '#F4F4F0'; g.lineWidth = 0.02 * s; g.strokeRect(X(sl.x - sl.L / 2), Y(sl.y + sl.W / 2), sl.L * s, sl.W * s); g.fillStyle = '#F4F4F0'; g.font = `700 ${0.11 * s}px Lexend, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(sl.id, X(sl.x), Y(sl.y)); });
@@ -734,6 +833,7 @@ class LimoSim extends SnoSim {
   sync(view) {
     if (!this.model) return;
     this.model.pose(this.q, this.Tb);
+    if (this.ballMesh) this.ballMesh.forEach((m, i) => { const M = this.balls[i].sys.T[0], q = K3.quat(M); m.position.set(M[3], M[7], M[11]); m.quaternion.set(q.x, q.y, q.z, q.w); });
     if (this.trackTex) this.trackTex.offset.y = -this.wheelA * LIMO_DIM.wr * 3 / 0.3;
     if (this.lamps) this.lamps.forEach(([c, m]) => { m.emissiveIntensity = this.light.s === c ? 1.6 : 0.05; });
     const pa = this.lidarPts.geometry.attributes.position, L = this.kin.T.laser_link, inc = 2 * Math.PI / 360; let n = 0;

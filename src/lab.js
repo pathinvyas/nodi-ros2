@@ -62,6 +62,9 @@ const IFACES = {
   'sensor_msgs/msg/LaserScan': { f: [['header', 'std_msgs/msg/Header'], ['angle_min', 'float32'], ['angle_max', 'float32'], ['angle_increment', 'float32'], ['time_increment', 'float32'], ['scan_time', 'float32'], ['range_min', 'float32'], ['range_max', 'float32'], ['ranges', 'float32[]'], ['intensities', 'float32[]']], head: '# Single scan from a planar laser range-finder\n' },
   'std_msgs/msg/Int32MultiArray': { f: [['data', 'int32[]']] },
   'sensor_msgs/msg/JointState': { f: [['header', 'std_msgs/msg/Header'], ['name', 'string[]'], ['position', 'float64[]'], ['velocity', 'float64[]'], ['effort', 'float64[]']], head: '# This is a message that holds data to describe the state of a set of torque controlled joints.\n' },
+  'sensor_msgs/msg/RegionOfInterest': { f: [['x_offset', 'uint32'], ['y_offset', 'uint32'], ['height', 'uint32'], ['width', 'uint32'], ['do_rectify', 'bool']], head: '# This message is used to specify a region of interest within an image.\n' },
+  'sensor_msgs/msg/Image': { f: [['header', 'std_msgs/msg/Header'], ['height', 'uint32'], ['width', 'uint32'], ['encoding', 'string'], ['is_bigendian', 'uint8'], ['step', 'uint32'], ['data', 'uint8[]']], head: '# This message contains an uncompressed image\n# (0, 0) is at top-left corner of image\n' },
+  'sensor_msgs/msg/CameraInfo': { f: [['header', 'std_msgs/msg/Header'], ['height', 'uint32'], ['width', 'uint32'], ['distortion_model', 'string'], ['d', 'float64[]'], ['k', 'float64[9]'], ['r', 'float64[9]'], ['p', 'float64[12]'], ['binning_x', 'uint32'], ['binning_y', 'uint32'], ['roi', 'sensor_msgs/msg/RegionOfInterest']], head: '# This message defines meta information for a camera. It should be in a\n# camera namespace on topic "camera_info" and accompanied by up to five\n# image topics named: image_raw, image, image_color, image_rect, image_rect_color\n' },
   'sensor_msgs/msg/Imu': { f: [['header', 'std_msgs/msg/Header'], ['orientation', 'geometry_msgs/msg/Quaternion'], ['orientation_covariance', 'float64[9]'], ['angular_velocity', 'geometry_msgs/msg/Vector3'], ['angular_velocity_covariance', 'float64[9]'], ['linear_acceleration', 'geometry_msgs/msg/Vector3'], ['linear_acceleration_covariance', 'float64[9]']], head: '# This is a message to hold data from an IMU (Inertial Measurement Unit)\n' },
   'nav_msgs/msg/Path': { f: [['header', 'std_msgs/msg/Header'], ['poses', 'geometry_msgs/msg/PoseStamped[]']], head: '# An array of poses that represents a Path for a robot to follow.\n' },
   'nav_msgs/msg/MapMetaData': { f: [['map_load_time', 'builtin_interfaces/msg/Time'], ['resolution', 'float32'], ['width', 'uint32'], ['height', 'uint32'], ['origin', 'geometry_msgs/msg/Pose']] },
@@ -138,6 +141,17 @@ const yScalar = (ft, v) => {
   if (isFloatT(ft)) return v === Infinity ? '.inf' : v === -Infinity ? '-.inf' : Number.isNaN(v) ? '.nan' : pyFloat(v);
   return String(Math.trunc(v));
 };
+// rough serialized size of a message (CDR-like), for ros2 topic bw
+function msgBytes(m) {
+  if (m == null) return 0;
+  if (ArrayBuffer.isView(m)) return 4 + m.byteLength;
+  if (typeof m === 'string') return 5 + m.length;
+  if (typeof m === 'number') return 8;
+  if (typeof m === 'boolean') return 1;
+  if (Array.isArray(m)) return 4 + m.reduce((a, x) => a + msgBytes(x), 0);
+  if (typeof m === 'object') return Object.values(m).reduce((a, x) => a + msgBytes(x), 0);
+  return 0;
+}
 function yamlMsg(type, obj, ind = '', out = [], fields) {
   (fields || IFACES[type].f).forEach(([n, ft]) => {
     const v = obj ? obj[n] : undefined;
@@ -382,7 +396,7 @@ const Missions = {
 /* ============================== terminal ============================== */
 const PROMPT = 'learner@ros2:~/ros2_ws$';
 const ROS2_CMDS = ['node', 'topic', 'service', 'param', 'interface', 'run', 'launch', 'pkg'];
-const VERBS = { node: ['list', 'info'], topic: ['list', 'echo', 'hz', 'info', 'type', 'pub'], service: ['list', 'type', 'call'], param: ['list', 'get', 'set', 'dump'], interface: ['list', 'show'], pkg: ['list', 'executables'] };
+const VERBS = { node: ['list', 'info'], topic: ['list', 'echo', 'hz', 'bw', 'info', 'type', 'pub'], service: ['list', 'type', 'call'], param: ['list', 'get', 'set', 'dump'], interface: ['list', 'show'], pkg: ['list', 'executables'] };
 const PKGS = { demo_nodes_cpp: ['talker', 'listener'], demo_nodes_py: ['talker', 'listener'], tf2_ros: ['tf2_echo', 'static_transform_publisher'], teleop_twist_keyboard: ['teleop_twist_keyboard'], lab_bringup: ['wander.launch.py', 'demo.launch.py'], turtlesim: ['turtlesim_node', 'turtle_teleop_key'] };
 // a stable fake DDS GID per endpoint, printed by `ros2 topic info -v`
 function gidOf(key) { let h1 = 2166136261; for (const c of key) h1 = Math.imul(h1 ^ c.charCodeAt(0), 16777619); const b = []; for (let i = 0; i < 16; i++) { h1 = Math.imul(h1 ^ i, 16777619); b.push(((h1 >>> 24) & 255).toString(16).padStart(2, '0')); } return b.join('.'); }
@@ -505,11 +519,23 @@ const CLI = {
       if (!once && Bus.hz(name) > 4) p('(the lab terminal shows at most 4 messages per second)', 'd');
       return;
     }
-    if (verb === 'hz') {
-      if (!Tp) { p(`WARNING: topic [${name}] does not appear to be published yet`, 'w'); }
+    if (verb === 'hz' || verb === 'bw') {
+      if (!Tp || !Tp.pubs.size) { p(`WARNING: topic [${name}] does not appear to be published yet`, 'w'); }
+      // like the real tools, hz and bw subscribe to the topic (so a camera that only renders for subscribers starts sending)
+      const node = `/_ros2cli_${++Bus.pid}`, ty = Tp ? (Tp.pubs.values().next().value || Tp.type) : null, sizes = [];
+      Bus.addNode(node, 'cli', { hidden: true, noParams: true });
+      const un = ty ? Bus.subscribe(node, name, ty, (m) => { if (verb === 'bw') { sizes.push(msgBytes(m)); if (sizes.length > 100) sizes.shift(); } }, { rel: Tp && [...Tp.pubQos.values()].some(q => q.rel === 'BEST_EFFORT') ? 'BEST_EFFORT' : 'RELIABLE', dur: 'VOLATILE', depth: 10 }) : () => {};
+      if (verb === 'bw') p(`Subscribed to [${name}]`);
+      Missions.event('cmd', verb + ':' + name);
       let win = 0;
-      const iv = setInterval(() => { const hz = Bus.hz(name); if (hz > 0) { win += Math.round(hz); p(`average rate: ${hz.toFixed(3)}\n\tmin: ${(1 / hz * 0.98).toFixed(3)}s max: ${(1 / hz * 1.02).toFixed(3)}s std dev: ${(0.0004 + Math.random() * 0.0006).toFixed(5)}s window: ${win}`); } }, 1000);
-      T.proc = { name: 'hz', stop: () => clearInterval(iv) };
+      const mb = (b) => b >= 1e6 ? (b / 1e6).toFixed(2) + ' MB' : b >= 1e3 ? (b / 1e3).toFixed(2) + ' KB' : b.toFixed(0) + ' B';
+      const iv = setInterval(() => {
+        const hz = Bus.hz(name); if (!(hz > 0)) return;
+        if (verb === 'hz') { win += Math.round(hz); p(`average rate: ${hz.toFixed(3)}\n\tmin: ${(1 / hz * 0.98).toFixed(3)}s max: ${(1 / hz * 1.02).toFixed(3)}s std dev: ${(0.0004 + Math.random() * 0.0006).toFixed(5)}s window: ${win}`); return; }
+        if (!sizes.length) return; const avg = sizes.reduce((a, x) => a + x, 0) / sizes.length;
+        p(`${mb(avg * hz)}/s from ${sizes.length} messages\n\tMessage size mean: ${mb(avg)} min: ${mb(Math.min(...sizes))} max: ${mb(Math.max(...sizes))}`);
+      }, 1000);
+      T.proc = { name: verb, stop: () => { clearInterval(iv); un(); Bus.removeNode(node); } };
     }
   },
   pub(T, r) {
@@ -593,7 +619,7 @@ const CLI = {
     if (!e) return p(`Setting parameter failed: parameter '${pn}' is not declared on ${n.name}`, 'e');
     if (e.ro) return p(`Setting parameter failed: Trying to set a read-only parameter: ${pn}.`, 'e');
     if (e.t !== vt) return p(`Setting parameter failed: Wrong parameter type, expected 'Type.${e.t.toUpperCase()}' got 'Type.${vt.toUpperCase()}'${e.t === 'double' && vt === 'integer' ? `\n(tip: write ${raw.trim()}.0 for a double)` : ''}`, 'e');
-    if (e.range && (v < e.range[0] || v > e.range[1])) return p(`Setting parameter failed: ${pn} must be between ${pyFloat(e.range[0])} and ${pyFloat(e.range[1])}`, 'e');
+    if (e.range && (v < e.range[0] || v > e.range[1])) { const f = e.t === 'integer' ? String : pyFloat; return p(`Setting parameter failed: ${pn} must be between ${f(e.range[0])} and ${f(e.range[1])}`, 'e'); }
     if (n.user) {
       T.proc = { name: 'param', stop: () => {} };
       Py.setParam(n.name, pn, v, e.t).then(res => { if (T.proc && T.proc.name === 'param') T.proc = null; if (res.ok) { p('Set parameter successful'); } else p(`Setting parameter failed${res.reason ? ': ' + res.reason : ''}`, 'e'); Lab.termState(); });
@@ -816,10 +842,10 @@ const Py = {
     this.worker.postMessage({ type: 'stop' }); this.cleanup(); this.phase = 'ready'; this.show('', 'Stopped'); this.H().ui.pyLog('■ stopped (Ctrl+C)', 'sys');
   },
   kill() { if (this.worker) { try { this.worker.terminate(); } catch (e) { /* ignore */ } } this.worker = null; clearInterval(this.watch); this.cleanup(); this.phase = 'off'; this.pending = null; this.show('', 'Python not started'); },
-  cleanup() { this.unsubs.forEach(u => u()); this.unsubs.clear(); this.nodes.forEach(n => this.H().bus.removeNode(n)); this.nodes.clear(); },
+  cleanup() { this.unsubs.forEach(u => u()); this.unsubs.clear(); this.nodes.forEach(n => this.H().bus.removeNode(n)); this.nodes.clear(); const ui = this.H().ui; if (ui.imshow) ui.imshow({ type: 'imclose', name: '' }); },
   watchdog() {
     const now = performance.now();
-    if (this.phase === 'running' && now - this.lastBeat > 4000) { this.phase = 'hang'; this.show('err', 'Not responding'); this.H().ui.pyLog('Your code has not responded for 4 s. Is there an endless loop (while True) or a time.sleep()? In ROS, use timers and callbacks instead. Press Stop to restart Python.', 'err'); }
+    if (this.phase === 'running' && now - this.lastBeat > 4000 && !(this.busyUntil > now)) { this.phase = 'hang'; this.show('err', 'Not responding'); this.H().ui.pyLog('Your code has not responded for 4 s. Is there an endless loop (while True) or a time.sleep()? In ROS, use timers and callbacks instead. Press Stop to restart Python.', 'err'); }
     if (this.phase === 'loading' && now - this.loadT > 45000 && !this._slow) { this._slow = true; this.H().ui.pyLog('Python is taking a while to download. A slow connection can take a minute.', 'warn'); }
   },
   setParam(node, name, value, ptype) {
@@ -833,12 +859,17 @@ const Py = {
   onMsg(m) {
     if (m.type === 'beat') { this.lastBeat = performance.now(); if (this.phase === 'hang') { this.phase = 'running'; this.show('run', 'Running'); } return; }
     if (m.type === 'status') return this.show('load', m.text);
+    // loading packages (numpy, OpenCV) can keep the worker busy for a while: that is not a hang
+    if (m.type === 'busy') { this.busyUntil = performance.now() + 120000; this.show('load', m.text); if (m.text !== this._busyT) { this._busyT = m.text; this.H().ui.pyLog(m.text, 'sys'); } return; }
+    if (m.type === 'idle') { this.busyUntil = 0; this._busyT = ''; this.lastBeat = performance.now(); if (this.phase === 'running' && this.disp === 'load') this.show('run', 'Starting…'); return; }
     if (m.type === 'ready') { this.phase = 'ready'; this.show('', `Python ${m.version} ready`); this.H().ui.pyLog(`Python ${m.version} ready · rclpy (lab edition) loaded`, 'sys'); if (this.pending) { const c = this.pending; this.pending = null; this.run(c); } return; }
     if (m.type === 'fatal') { if (this.phase === 'loading') this.fail(`Python could not load in this viewer (${m.text}).`); else this.H().ui.pyLog(m.text, 'err'); return; }
     if (m.type === 'paramResult') { const r = this.reqs.get(m.id); if (r) { this.reqs.delete(m.id); try { r(JSON.parse(m.json)); } catch (e) { r({ ok: false }); } } return; }
     if (m.type === 'out') return this.H().ui.pyLog(m.text, m.err ? 'err' : 'out');
     if (m.type !== 'bridge') return;
     let d; try { d = JSON.parse(m.json); } catch (e) { return; }
+    if (m.bin && d.type === 'pub' && d.data) d.data.data = m.bin;
+    if (d.type === 'imshow' || d.type === 'imclose') { const ui = this.H().ui; if (ui.imshow) ui.imshow(d, m.bin); return; }
     const nm = (x) => x.startsWith('/') ? x : '/' + x;
     switch (d.type) {
       case 'node': { const n = this.H().bus.addNode(nm(d.name), 'user', { user: true }); n.user = true; this.nodes.add(n.name); break; }
@@ -848,7 +879,12 @@ const Py = {
         if (!IFACES[d.msgType]) this.H().ui.pyLog(`[WARN] nothing in the lab publishes ${d.msgType}`, 'warn');
         const T0 = this.H().bus.topics.get(d.topic);
         if (T0 && T0.type && T0.type !== d.msgType) this.H().ui.pyLog(`[WARN] ${d.topic} carries ${T0.type}, but your subscription expects ${d.msgType}. Types must match, so nothing will arrive.`, 'warn');
-        const un = this.H().bus.subscribe(nm(d.node), d.topic, d.msgType, (msg) => { if (this.worker && this.phase === 'running') this.worker.postMessage({ type: 'msg', topic: d.topic, msgType: d.msgType, json: JSON.stringify(msg, (k, v) => (typeof v === 'number' && !Number.isFinite(v)) ? null : v) }); });
+        const un = this.H().bus.subscribe(nm(d.node), d.topic, d.msgType, (msg) => {
+          if (!this.worker || this.phase !== 'running') return;
+          // an image's bytes travel as a typed array next to the JSON (a copy, since other subscribers share the message)
+          if (msg && ArrayBuffer.isView(msg.data)) { const bin = new Uint8Array(msg.data.buffer.slice(msg.data.byteOffset, msg.data.byteOffset + msg.data.byteLength)); this.worker.postMessage({ type: 'msg', topic: d.topic, msgType: d.msgType, json: JSON.stringify(Object.assign({}, msg, { data: null })), bin }, [bin.buffer]); return; }
+          this.worker.postMessage({ type: 'msg', topic: d.topic, msgType: d.msgType, json: JSON.stringify(msg, (k, v) => (typeof v === 'number' && !Number.isFinite(v)) ? null : v) });
+        });
         this.unsubs.set(key, un); break;
       }
       case 'pub': {

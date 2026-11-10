@@ -3,6 +3,7 @@
 # talks to the Robot Lab and SnoBots simulators through a message bridge.
 import sys
 import types
+import array
 import json
 import math
 import time
@@ -43,6 +44,12 @@ def _post(**kw):
     labbridge.post(json.dumps(_clean(kw)))
 
 
+def _post_bin(blob, **kw):
+    # images: the bytes travel next to the JSON (as a typed array), not inside it
+    from pyodide.ffi import to_js
+    labbridge.post_bin(json.dumps(_clean(kw)), to_js(memoryview(blob)))
+
+
 # ------------------------------------------------------------------ messages
 class _Msg:
     _fields = ()
@@ -76,6 +83,8 @@ class _Msg:
                 raise AssertionError(f"The '{n}' field must be of type 'str'")
         elif isinstance(kind, type) and issubclass(kind, _Msg) and not isinstance(v, kind):
             raise AssertionError(f"The '{n}' field must be a sub message of type '{kind.__name__}'")
+        elif kind is _bytes:
+            v = _as_bytes(n, v)
         object.__setattr__(self, n, v)
 
     def __repr__(self):
@@ -90,12 +99,38 @@ def _one():
     return 1.0
 
 
+def _bytes():
+    # a uint8[] field, stored like rclpy does: array.array('B')
+    return array.array('B')
+
+
+def _as_bytes(n, v):
+    if isinstance(v, array.array) and v.typecode == 'B':
+        return v
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return array.array('B', bytes(v))
+    if hasattr(v, 'dtype') and hasattr(v, 'tobytes'):
+        if str(v.dtype) != 'uint8':
+            raise AssertionError(f"The '{n}' field must hold uint8 values, got a {v.dtype} array (tip: .astype(np.uint8), or use cv_bridge)")
+        return array.array('B', v.tobytes())
+    if isinstance(v, (list, tuple)):
+        try:
+            return array.array('B', v)
+        except (OverflowError, TypeError):
+            raise AssertionError(f"The '{n}' field must be a sequence of integers in [0, 255]")
+    raise AssertionError(f"The '{n}' field must be bytes, a bytearray or an array of uint8")
+
+
 def _z36():
     return [0.0] * 36
 
 
 def _z9():
     return [0.0] * 9
+
+
+def _z12():
+    return [0.0] * 12
 
 
 class _ListOf:
@@ -117,6 +152,8 @@ def _mk(pkg, name, fields):
             kinds[n] = fac
         elif fac is _one:
             kinds[n] = float
+        elif fac is _bytes:
+            kinds[n] = _bytes
     return type(name, (_Msg,), {'_fields': tuple(fields), '_names': names, '_kinds': kinds,
                                 '_type': f'{pkg}/{name}', '__module__': pkg.replace('/', '.')})
 
@@ -174,6 +211,10 @@ LaserScan = _mk('sensor_msgs/msg', 'LaserScan', [('header', Header), ('angle_min
                                                  ('time_increment', F), ('scan_time', F), ('range_min', F), ('range_max', F), ('ranges', list), ('intensities', list)])
 SetParametersResult = _mk('rcl_interfaces/msg', 'SetParametersResult', [('successful', B), ('reason', S)])
 JointState = _mk('sensor_msgs/msg', 'JointState', [('header', Header), ('name', list), ('position', list), ('velocity', list), ('effort', list)])
+RegionOfInterest = _mk('sensor_msgs/msg', 'RegionOfInterest', [('x_offset', I), ('y_offset', I), ('height', I), ('width', I), ('do_rectify', B)])
+Image = _mk('sensor_msgs/msg', 'Image', [('header', Header), ('height', I), ('width', I), ('encoding', S), ('is_bigendian', I), ('step', I), ('data', _bytes)])
+CameraInfo = _mk('sensor_msgs/msg', 'CameraInfo', [('header', Header), ('height', I), ('width', I), ('distortion_model', S), ('d', list), ('k', _z9), ('r', _z9), ('p', _z12),
+                                                   ('binning_x', I), ('binning_y', I), ('roi', RegionOfInterest)])
 Imu = _mk('sensor_msgs/msg', 'Imu', [('header', Header), ('orientation', Quaternion), ('orientation_covariance', _z9), ('angular_velocity', Vector3),
                                      ('angular_velocity_covariance', _z9), ('linear_acceleration', Vector3), ('linear_acceleration_covariance', _z9)])
 Path = _mk('nav_msgs/msg', 'Path', [('header', Header), ('poses', _ListOf(PoseStamped))])
@@ -369,7 +410,16 @@ class Publisher:
         if not isinstance(msg, self.msg_type):
             hint = ' (you passed the class itself: create a message first, e.g. msg = ' + self.msg_type.__name__ + '())' if msg is self.msg_type else ''
             raise TypeError(f'Expected {self.msg_type.__name__}, got {type(msg).__name__}{hint}')
-        _post(type='pub', node=self.node._fqn(), topic=self.topic_name, msgType=self.msg_type._type, data=_to_dict(msg))
+        d = _to_dict(msg)
+        blob = None
+        for k, v in d.items():
+            if isinstance(v, array.array):
+                blob, d[k] = v, None
+                break
+        if blob is not None:
+            _post_bin(blob, type='pub', node=self.node._fqn(), topic=self.topic_name, msgType=self.msg_type._type, data=d)
+        else:
+            _post(type='pub', node=self.node._fqn(), topic=self.topic_name, msgType=self.msg_type._type, data=d)
 
     def get_subscription_count(self):
         return 1
@@ -698,7 +748,7 @@ _module('geometry_msgs.msg', Vector3=Vector3, Point=Point, Quaternion=Quaternion
 _module('nav_msgs')
 _module('nav_msgs.msg', Odometry=Odometry, Path=Path, MapMetaData=MapMetaData, OccupancyGrid=OccupancyGrid)
 _module('sensor_msgs')
-_module('sensor_msgs.msg', LaserScan=LaserScan, JointState=JointState, Imu=Imu)
+_module('sensor_msgs.msg', LaserScan=LaserScan, JointState=JointState, Imu=Imu, Image=Image, CameraInfo=CameraInfo, RegionOfInterest=RegionOfInterest)
 _module('limo_msgs')
 _module('limo_msgs.msg', LimoStatus=LimoStatus)
 _module('snobots_msgs')
@@ -720,6 +770,135 @@ _module('rclpy.logging', get_logger=lambda name: RcutilsLogger(name))
 _module('rclpy.timer', Timer=Timer)
 _module('rclpy.publisher', Publisher=Publisher)
 _module('rclpy.subscription', Subscription=Subscription)
+
+
+# ------------------------------------------------------------------ cv_bridge (lab edition): sensor_msgs/Image <-> numpy arrays
+class CvBridgeError(TypeError):
+    """Raised when an image cannot be converted, as in the real cv_bridge."""
+
+
+_ENC = {'rgb8': (3, 'uint8'), 'bgr8': (3, 'uint8'), 'rgba8': (4, 'uint8'), 'bgra8': (4, 'uint8'), 'mono8': (1, 'uint8'), 'mono16': (1, 'uint16'),
+        '8UC1': (1, 'uint8'), '8UC3': (3, 'uint8'), '8UC4': (4, 'uint8'), '16UC1': (1, 'uint16'), '32FC1': (1, 'float32')}
+_ALIAS = {'8UC1': 'mono8', '8UC3': 'bgr8', '8UC4': 'bgra8', '16UC1': 'mono16'}
+
+
+def _cv_convert(im, src, dst):
+    import numpy as np
+    if dst == 'passthrough' or src == dst:
+        return im
+    s, d = _ALIAS.get(src, src), _ALIAS.get(dst, dst)
+    if dst not in _ENC:
+        raise CvBridgeError(f'Unrecognized image encoding [{dst}]')
+    if s == d:
+        return im
+    if s in ('rgb8', 'bgr8', 'rgba8', 'bgra8'):
+        rgb, alpha = (im[..., 2::-1] if s.startswith('bgr') else im[..., :3]), (im[..., 3] if s.endswith('a8') else None)
+    elif s == 'mono8':
+        rgb, alpha = np.repeat(im.reshape(im.shape[0], im.shape[1], 1), 3, axis=2), None
+    else:
+        raise CvBridgeError(f'[{src}] is not a color format. but [{dst}] is. The conversion does not make sense')
+    if d == 'mono8':
+        return np.clip(np.rint(rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114), 0, 255).astype(np.uint8)
+    if d in ('rgb8', 'bgr8'):
+        return np.ascontiguousarray(rgb if d == 'rgb8' else rgb[..., ::-1])
+    if d in ('rgba8', 'bgra8'):
+        a = alpha if alpha is not None else np.full(rgb.shape[:2], 255, np.uint8)
+        return np.ascontiguousarray(np.dstack([rgb if d == 'rgba8' else rgb[..., ::-1], a]))
+    raise CvBridgeError(f'Unsupported conversion from [{src}] to [{dst}]')
+
+
+class CvBridge:
+    """Converts between sensor_msgs/Image and numpy arrays (OpenCV images), like cv_bridge.CvBridge."""
+
+    def imgmsg_to_cv2(self, img_msg, desired_encoding='passthrough'):
+        import numpy as np
+        enc = img_msg.encoding
+        if enc not in _ENC:
+            raise CvBridgeError(f'Unrecognized image encoding [{enc}]')
+        ch, dt = _ENC[enc]
+        dtype = np.dtype(dt)
+        h, w, step = int(img_msg.height), int(img_msg.width), int(img_msg.step)
+        row = w * ch * dtype.itemsize
+        buf = np.frombuffer(img_msg.data, dtype=np.uint8)
+        if h <= 0 or w <= 0 or step < row or buf.size < step * (h - 1) + row:
+            raise CvBridgeError(f'image data ({buf.size} bytes) does not match height {h}, width {w}, step {step} and encoding {enc}')
+        rows = buf[:h * step].reshape(h, step)[:, :row]
+        im = np.ascontiguousarray(rows).view(dtype).reshape((h, w) if ch == 1 else (h, w, ch))
+        if img_msg.is_bigendian and dtype.itemsize > 1:
+            im = im.byteswap()
+        return _cv_convert(im, enc, desired_encoding)
+
+    def cv2_to_imgmsg(self, cvim, encoding='passthrough', header=None):
+        import numpy as np
+        if not isinstance(cvim, np.ndarray):
+            raise TypeError('Your input type is not a numpy array')
+        if cvim.ndim not in (2, 3):
+            raise CvBridgeError(f'an image must have 2 or 3 dimensions, got shape {cvim.shape}')
+        ch = 1 if cvim.ndim == 2 else int(cvim.shape[2])
+        cv_type = {('uint8', 1): '8UC1', ('uint8', 3): '8UC3', ('uint8', 4): '8UC4', ('uint16', 1): '16UC1', ('float32', 1): '32FC1'}.get((str(cvim.dtype), ch))
+        if cv_type is None:
+            raise CvBridgeError(f'unsupported image: {cvim.dtype} with {ch} channel(s)')
+        if encoding == 'passthrough':
+            encoding = cv_type
+        elif encoding not in _ENC:
+            raise CvBridgeError(f'Unrecognized image encoding [{encoding}]')
+        elif _ENC[encoding] != (ch, str(cvim.dtype)):
+            raise CvBridgeError(f'encoding specified as {encoding}, but image has incompatible type {cv_type}')
+        img = np.ascontiguousarray(cvim)
+        msg = Image()
+        msg.height, msg.width = int(img.shape[0]), int(img.shape[1])
+        msg.encoding = encoding
+        msg.is_bigendian = 0
+        msg.step = int(img.strides[0])
+        msg.data = img.tobytes()
+        if header is not None:
+            msg.header = header
+        return msg
+
+
+_module('cv_bridge', CvBridge=CvBridge, CvBridgeError=CvBridgeError)
+
+
+# ------------------------------------------------------------------ OpenCV windows: cv2.imshow shows the image over the 3D view
+_imshow_t = {}
+
+
+def _lab_imshow(winname, mat):
+    import numpy as np
+    a = np.asarray(mat)
+    if a.ndim == 3 and a.shape[2] == 1:
+        a = a[..., 0]
+    if a.size == 0 or a.ndim not in (2, 3) or (a.ndim == 3 and a.shape[2] not in (3, 4)):
+        raise ValueError(f'cv2.imshow() cannot show an array of shape {a.shape}: use a 2-D (gray) or 3-channel BGR image')
+    if a.dtype == np.bool_:
+        a = a.astype(np.uint8) * 255
+    elif a.dtype in (np.uint16, np.int16):
+        a = np.clip(a.astype(np.int32) >> 8, 0, 255).astype(np.uint8)   # like OpenCV: 16-bit values are divided by 256
+    elif np.issubdtype(a.dtype, np.floating):
+        a = np.clip(a * 255.0, 0, 255).astype(np.uint8)                  # like OpenCV: floats are shown as 0..1
+    elif a.dtype != np.uint8:
+        a = np.clip(a, 0, 255).astype(np.uint8)
+    name = str(winname)
+    now = time.monotonic()
+    if now - _imshow_t.get(name, -1.0) < 1 / 15:
+        return
+    _imshow_t[name] = now
+    h, w = a.shape[:2]
+    _post_bin(np.ascontiguousarray(a).tobytes(), type='imshow', name=name, h=int(h), w=int(w), c=1 if a.ndim == 2 else int(a.shape[2]))
+
+
+def _lab_patch_cv2():
+    import cv2
+    if getattr(cv2, '_lab_patched', False):
+        return
+    none = lambda *a, **k: None  # noqa: E731
+    cv2.imshow = _lab_imshow
+    cv2.waitKey = cv2.waitKeyEx = lambda delay=0: -1
+    cv2.pollKey = lambda: -1
+    cv2.namedWindow = cv2.resizeWindow = cv2.moveWindow = cv2.setWindowTitle = cv2.setMouseCallback = none
+    cv2.destroyWindow = lambda winname: _post(type='imclose', name=str(winname))
+    cv2.destroyAllWindows = lambda: _post(type='imclose', name='')
+    cv2._lab_patched = True
 
 
 # ------------------------------------------------------------------ bridge entry points (called from JS)
@@ -781,7 +960,7 @@ def _lab_tick():
                 return
 
 
-def _lab_deliver(topic, msg_type, js):
+def _lab_deliver(topic, msg_type, js, binp=None):
     if not _state['running']:
         return
     subs = _state['subs'].get(topic)
@@ -793,6 +972,8 @@ def _lab_deliver(topic, msg_type, js):
             continue
         if data is None:
             data = json.loads(js)
+            if binp is not None:
+                data['data'] = array.array('B', binp.to_bytes())
         if not _safe_call(s.callback, _from_dict(s.msg_type, data)):
             return
 
