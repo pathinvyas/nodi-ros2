@@ -84,7 +84,7 @@ test('ros2 topic bw sizes: an image is about 230 kB, a Twist 48 bytes', () => {
 /* ---------- the arena ---------- */
 test('ArUco markers: the DICT_4X4_50 codes OpenCV draws, each facing open floor', () => {
   // cv2.aruco.generateImageMarker(DICT_4X4_50, id, 6): the inner 4x4 cells, row by row, white = 1
-  const OPENCV = { 3: 39238, 5: 31181, 7: 50418, 12: 3767, 21: 45099 };
+  const OPENCV = { 0: 46386, 1: 3994, 2: 13101, 3: 39238, 4: 21662, 5: 31181, 7: 50418, 8: 65242, 12: 3767, 21: 45099 };
   assert(JSON.stringify(L.ARUCO_4X4) === JSON.stringify(OPENCV), `codes ${JSON.stringify(L.ARUCO_4X4)}`);
   const sim = fresh(), A = sim.A, ids = A.markers.map(M => M.id);
   assert(new Set(ids).size === ids.length, `duplicate ids ${ids}`);

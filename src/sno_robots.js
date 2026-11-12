@@ -1,17 +1,209 @@
 /* ============================== SnoBots: AiNex and R1 specifics ============================== */
 const D2R = Math.PI / 180;
 const AINEX_FIELD = { x0: -0.9, x1: 1.5, y0: -0.9, y1: 0.9, goalY: 0.25, goalD: 0.18, goalH: 0.2 };
+// the head camera: 320x240 through a 120-degree (diagonal) wide-angle lens, simulated as an ideal pinhole (no distortion)
+const AINEX_CAM = (() => { const w = 320, h = 240, f = +(Math.hypot(w, h) / 2 / Math.tan(60 * D2R)).toFixed(4); return { w, h, f, vfov: 2 * Math.atan(h / 2 / f) / D2R, hfov: 2 * Math.atan(w / 2 / f), near: 0.01, far: 20 }; })();
+// ArUco tags (DICT_4X4_50) on posts around the pitch and one above the goal; size is the black square, z its centre
+const AINEX_TAGS = [
+  { id: 1, x: -1.0, y: -0.45, z: 0.165, yaw: 0, size: 0.15 }, { id: 2, x: -1.0, y: 0.45, z: 0.165, yaw: 0, size: 0.15 },
+  { id: 4, x: -0.2, y: 1.0, z: 0.165, yaw: -Math.PI / 2, size: 0.15 }, { id: 8, x: 0.8, y: -1.0, z: 0.165, yaw: Math.PI / 2, size: 0.15 },
+  { id: 0, x: 1.74, y: 0, z: 0.36, yaw: Math.PI, size: 0.2 },
+];
+// fixed joints that robot_state_publisher sends on /tf_static
+const AINEX_STATIC = ['torso_joint', 'camera_joint', 'camera_optical_joint', 'imu_joint', 'l_sole_joint', 'r_sole_joint'];
 
 class AinexSim extends HumanoidSim {
-  setupExtra() {
-    this.node('/color_detector', 'vision', [['target_color', 'red', 'string'], ['min_area', 0.0001, 'double', [0, 0.05]]]);
-    this.bus.advertise('/color_detector', '/color_detection', 'snobots_msgs/msg/ColorDetection');
-    this.trk = { on: false, held: 0 }; this.rx = { on: false, cool: 0 }; this.det = null; this.goals = 0;
+  reset() { super.reset(); this.vst = { watch: 0, headT: -9, still: 0, ids: new Set(), kickT: -99, hz: false, info: false }; }
+  /* ---------- ROS: the robot's software runs as processes that its bringup launch file starts ---------- */
+  setupRos() {
+    const B = this.bus, cam = '/usb_cam';
+    this.tn = {}; this.tfStatic = new Map();
+    // the TF tree is what is actually being published; /marker_id is watched for the tag mission
+    B.onPublish = (node, topic, type, msg) => {
+      if (topic === '/tf_static' && msg && msg.transforms) this.noteStatic(node, msg.transforms);
+      if (topic === '/marker_id' && type === 'std_msgs/msg/Int32' && msg) this.tagSeen(Math.trunc(+msg.data), node);
+    };
+    B.onRemove = (node) => { this.tfStatic.delete(node); };
+    B.topic('/tf_static', 'tf2_msgs/msg/TFMessage').latched = true;
+    // the detector and the ball locator subscribe like any node but never need the pixels, so they don't make the camera render
+    this.camCfg = { key: 'cam', node: cam, w: AINEX_CAM.w, h: AINEX_CAM.h, f: AINEX_CAM.f, fps: () => this.P(cam, 'framerate'), on: () => true, frame: () => String(this.P(cam, 'frame_id') || ''), internal: new Set(['/color_detector', '/ball_locator']) };
+    this.trk = { on: false, held: 0 }; this.rx = { on: false, cool: 0 }; this.det = null; this.goals = this.goals || 0;
+    this.restoreRobot({});
   }
+  pkgs() { return Object.assign(super.pkgs(), { robot_state_publisher: ['robot_state_publisher'], ainex_controller: ['ainex_controller'], usb_cam: ['usb_cam_node_exe'], ainex_vision: ['color_detector', 'ball_locator'] }); }
   onParam(node, k, v) {
-    if (node === '/color_detector' && k === 'target_color' && !['red', 'green', 'blue', 'any'].includes(String(v))) return { ok: false, reason: "target_color must be red, green, blue or any" };
+    if (node === '/color_detector' && k === 'target_color' && !['red', 'green', 'blue', 'any'].includes(String(v))) return { ok: false, reason: 'target_color must be red, green, blue or any' };
     this.event('param', { node, k, v }); return { ok: true };
   }
+  // cfg works like LimoSim.restoreRobot's: <proc>: false leaves it out, { params, remaps } changes it, died: crashes at
+  // start-up. joy starts the joystick's teleop node ('twist' or 'stamped'), tracking switches head tracking on.
+  restoreRobot(cfg = {}) {
+    const B = this.bus;
+    Object.keys(this.procs).forEach(k => this.stopProc(k));
+    if (this.trk.on) this.setTracker(false); if (this.rx.on) this.setReactor(false);
+    [...B.nodes.keys()].filter(n => n === '/teleop_panel' || /^\/(static_transform_publisher_|relay)/.test(n)).forEach(n => B.removeNode(n));
+    this._tele = null; this.keys = {}; this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' }; this.warnT = {}; this.lastWarn = ''; B.clashes.clear();
+    this.launchProcs(['rsp', 'ctl', 'cam', 'det', 'ball'], cfg);
+    if (cfg.joy) { const st = cfg.joy === 'stamped'; this.node('/teleop_panel', 'teleop', [['publish_stamped_twist', st, 'bool']]); B.advertise('/teleop_panel', '/cmd_vel', st ? 'geometry_msgs/msg/TwistStamped' : 'geometry_msgs/msg/Twist'); }
+    if (cfg.tracking) this.setTracker(true);
+    if (SnoUI.cur === this) SnoUI.refreshTab('control');
+  }
+  procDefs() {
+    if (this._pd) return this._pd;
+    const B = this.bus, H = this.H, TF = 'tf2_msgs/msg/TFMessage', IMG = 'sensor_msgs/msg/Image', INFO = 'sensor_msgs/msg/CameraInfo', latched = { dur: 'TRANSIENT_LOCAL', depth: 1 };
+    const qosOk = (k, v) => k.startsWith('qos_overrides.') && !['reliable', 'best_effort', 'system_default'].includes(String(v)) ? `${k}: '${v}' is not a reliability (use reliable or best_effort)` : '';
+    const qos = (node, k) => this.P(node, k) === 'best_effort' ? { rel: 'BEST_EFFORT', depth: 5 } : { rel: 'RELIABLE', depth: 10 };
+    return (this._pd = {
+      rsp: { pkg: 'robot_state_publisher', exe: 'robot_state_publisher', node: '/robot_state_publisher', kind: 'description', params: () => [['publish_frequency', 20.0, 'double', [1, 100]]],
+        start: () => {
+          const n = '/robot_state_publisher'; B.advertise(n, '/tf', TF); B.subscribe(n, '/joint_states', 'sensor_msgs/msg/JointState', () => {});
+          B.advertise(n, '/tf_static', TF, latched); this.pub(n, '/tf_static', TF, this.tfMsg(AINEX_STATIC.map(j => { const J = this.kin.J[j]; return [J.parent, J.child, J.O]; })));
+          ['base_link', 'l_hip_yaw_link', 'r_hip_yaw_link', 'torso_link'].forEach(l => this.log(n, 'INFO', `got segment ${l}`));
+        } },
+      ctl: { pkg: 'ainex_controller', exe: 'ainex_controller', node: H.ctl, kind: 'sim', params: () => H.params, start: (rec) => this.ctlStart(rec), stop: () => this.ctlStop() },
+      // usb_cam reads its settings once at start-up, so they are read-only here: restart the driver to change them
+      cam: { pkg: 'usb_cam', exe: 'usb_cam_node_exe', node: '/usb_cam', kind: 'driver',
+        params: () => [['video_device', '/dev/video0', 'string', null, true], ['image_width', AINEX_CAM.w, 'integer', null, true], ['image_height', AINEX_CAM.h, 'integer', null, true], ['framerate', 15.0, 'double', [1, 30], true], ['pixel_format', 'yuyv', 'string', null, true], ['io_method', 'mmap', 'string', null, true], ['camera_name', 'ainex_head', 'string', null, true], ['frame_id', 'camera_optical_frame', 'string', null, true], ['qos_overrides./image_raw.publisher.reliability', 'reliable', 'string', null, true]],
+        check: (k, v) => qosOk(k, v) || ((k === 'image_width' && v !== AINEX_CAM.w) || (k === 'image_height' && v !== AINEX_CAM.h) ? `${k}: the simulated camera streams ${AINEX_CAM.w}x${AINEX_CAM.h} only` : ''),
+        crash: "terminate called after throwing an instance of 'std::runtime_error'  what():  Cannot identify '/dev/video0': 2, No such file or directory",
+        start: (rec) => {
+          const n = '/usb_cam', R = rec.R; this.tn.img = R('/image_raw'); this.tn.info = R('/camera_info'); this.camLast = null; this.camDue = null;
+          B.advertise(n, this.tn.img, IMG, qos(n, 'qos_overrides./image_raw.publisher.reliability')); B.advertise(n, this.tn.info, INFO);
+          const nm = this.P(n, 'camera_name'), fps = +this.P(n, 'framerate');
+          this.log(n, 'INFO', `camera_name value: ${nm}`);
+          this.log(n, 'INFO', `Starting '${nm}' (${this.P(n, 'video_device')}) at ${AINEX_CAM.w}x${AINEX_CAM.h} via ${this.P(n, 'io_method')} (${this.P(n, 'pixel_format')}) at ${Math.round(fps)} FPS`);
+          this.log(n, 'INFO', `Timer triggering every ${Math.round(1000 / fps)} ms`);
+        },
+        stop: () => { this.tn.img = null; this.tn.info = null; this.camDue = null; } },
+      det: { pkg: 'ainex_vision', exe: 'color_detector', node: '/color_detector', kind: 'vision',
+        params: () => [['target_color', 'red', 'string'], ['min_area', 0.0001, 'double', [0, 0.05]], ['qos_overrides./image_raw.subscription.reliability', 'reliable', 'string', null, true]],
+        check: (k, v) => qosOk(k, v) || (k === 'target_color' && !['red', 'green', 'blue', 'any'].includes(String(v)) ? 'target_color must be red, green, blue or any' : ''),
+        start: (rec) => {
+          const n = '/color_detector', R = rec.R; this.det = null; this.tn.det = R('/color_detection');
+          rec.un.push(B.subscribe(n, R('/image_raw'), IMG, (m) => this.visionIn('det', m.header), qos(n, 'qos_overrides./image_raw.subscription.reliability')), B.subscribe(n, R('/camera_info'), INFO, () => {}));
+          B.advertise(n, this.tn.det, 'snobots_msgs/msg/ColorDetection');
+          this.log(n, 'INFO', `looking for ${this.P(n, 'target_color')} blobs in ${R('/image_raw')}`);
+        },
+        stop: () => { this.det = null; this.tn.det = null; } },
+      ball: { pkg: 'ainex_vision', exe: 'ball_locator', node: '/ball_locator', kind: 'vision',
+        params: () => [['ball_radius', 0.035, 'double', [0.01, 0.2]], ['target_frame', 'base_link', 'string']],
+        start: (rec) => {
+          const n = '/ball_locator', R = rec.R; this.tn.ball = R('/ball_position');
+          rec.un.push(B.subscribe(n, R('/image_raw'), IMG, (m) => this.visionIn('ball', m.header)), B.subscribe(n, R('/camera_info'), INFO, () => {}), B.subscribe(n, '/tf', TF, () => {}), B.subscribe(n, '/tf_static', TF, () => {}, latched));
+          B.advertise(n, this.tn.ball, 'geometry_msgs/msg/PointStamped');
+          this.log(n, 'INFO', `placing the orange ball on the floor: ${this.tn.ball} in ${this.P(n, 'target_frame')}`);
+        },
+        stop: () => { this.tn.ball = null; } },
+    });
+  }
+  // the walking controller: commands in, joint states, IMU, odometry and its state out
+  ctlStart(rec) {
+    const c = this.ctl, B = this.bus, H = this.H;
+    this.tn.cmd = rec.R('/cmd_vel');
+    rec.un.push(this.cmdVelSub(c, this.tn.cmd));
+    rec.un.push(B.subscribe(c, '/joint_commands', 'sensor_msgs/msg/JointState', (m, from) => this.onJointCmd(m, from)));
+    rec.un.push(B.subscribe(c, H.actionTopic, 'std_msgs/msg/String', (m, from) => { const r = this.playAction(String(m.data || '').trim()); if (!r.ok) this.logWarn(r.reason); else this.event('action', { name: String(m.data).trim(), from }); }));
+    ['/joint_states', 'sensor_msgs/msg/JointState', '/imu', 'sensor_msgs/msg/Imu', '/odom', 'nav_msgs/msg/Odometry', '/tf', 'tf2_msgs/msg/TFMessage', H.stateTopic, 'std_msgs/msg/String'].forEach((x, i, a) => { if (i % 2 === 0) B.advertise(c, x, a[i + 1]); });
+    B.service('/reset_world', 'std_srvs/srv/Empty', c, () => { this.reset(); this.event('service', '/reset_world'); return {}; });
+    B.service('/sim/push', 'std_srvs/srv/Trigger', c, () => { this.push(1); this.event('service', '/sim/push'); return { success: true, message: 'pushed' }; });
+    B.service(H.standSrv, 'std_srvs/srv/Trigger', c, () => { const r = this.standUp(); this.event('service', H.standSrv); return { success: r.ok, message: r.ok ? 'standing up' : r.reason }; });
+    this.log(c, 'INFO', 'servo bus open on /dev/ttyAMA0: 24 servos answered');
+    this.log(c, 'INFO', `walking engine ready, listening on ${this.tn.cmd}`);
+  }
+  ctlStop() { this.tn.cmd = null; this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' }; }
+  publish(dt) { if (this.procs.ctl) super.publish(dt); }
+  logWarn(t) { this.lastWarn = t; if (this.procs.ctl) this.log(this.ctl, 'WARN', t); }
+  onJointCmd(m, from) {
+    super.onJointCmd(m, from);
+    const nd = this.bus.nodes.get(from); if (nd && nd.user && (m.name || []).some(x => x === 'head_pan' || x === 'head_tilt')) this.vst.headT = this.t;
+  }
+  /* ---------- TF as published: odom -> base_link from the controller, the joints from robot_state_publisher
+     (fed by /joint_states), fixed parts from /tf_static ---------- */
+  poseOf(f, d = 0) {
+    if (!f || d > 16) return null;
+    const ctl = !!this.procs.ctl;
+    if (f === 'odom') return ctl ? K3.I() : null;
+    if (f === this.kin.root) return ctl ? this.Tr : null;
+    const st = this.staticOf(f); if (st) { const P = this.poseOf(st.parent, d + 1); return P ? K3.mul(P, st.T) : null; }
+    this._sk = this._sk || new Set(AINEX_STATIC.map(n => this.kin.J[n].child));
+    return this.kin.T[f] && !this._sk.has(f) && this.procs.rsp && ctl ? this.kin.T[f] : null;
+  }
+  frames() {
+    const out = new Set(['odom', ...this.kin.links]); this.tfStatic.forEach(m => m.forEach((v, c) => { out.add(c); out.add(v.parent); }));
+    return [...out].filter(f => this.poseOf(f));
+  }
+  lookup(a, b) { const A = this.poseOf(a), B = this.poseOf(b); return A && B ? K3.mul(K3.inv(A), B) : null; }
+  /* ---------- vision nodes, fed frame by frame by the camera ---------- */
+  onCamFrame(hd) {
+    if (this.procs.det && this.camFeeds('/color_detector')) this.visionIn('det', hd);
+    if (this.procs.ball && this.camFeeds('/ball_locator')) this.visionIn('ball', hd);
+  }
+  // one frame reaching a vision node, straight from the camera or as a real image (through a relay, say): once per frame
+  visionIn(which, hd) {
+    const seen = this._seen || (this._seen = {}); if (!hd || seen[which] === hd) return; seen[which] = hd;
+    if (which === 'det') { this.detectTick(hd); if (this.fix) this.fix.stats.det++; } else this.locateTick(hd);
+  }
+  // /color_detector: the largest blob of target_color, as this frame shows it
+  detectTick(hd) {
+    const Tc = this.kin.T.camera_link; if (!Tc || !this.tn.det) return;
+    const n = '/color_detector', Ti = K3.inv(Tc), hf = Math.tan(this.H.hfov / 2), vf = Math.tan(this.H.camVfov * D2R / 2);
+    const want = String(this.P(n, 'target_color') || 'red').toLowerCase(), minA = this.P(n, 'min_area') || 0;
+    let best = null;
+    for (const o of this.objs) {
+      if (o.kind !== 'block' || (want !== 'any' && o.color !== want)) continue;
+      const p = K3.apply(Ti, o.x, o.y, o.z); if (p[0] < 0.04) continue;
+      const u = -p[1] / p[0] / hf, v = -p[2] / p[0] / vf; if (Math.abs(u) > 1 || Math.abs(v) > 1 || p[0] > 3) continue;
+      const area = Math.pow(o.size / p[0], 2) / (4 * hf * vf); if (area < minA) continue;
+      const sticky = want === 'any' && this.det && this.det.color === o.color ? 1.8 : 1;   // keep following the same blob
+      if (!best || area * sticky > best.score) best = { color: o.color, x: u, y: v, area, score: area * sticky };
+    }
+    this.det = best;
+    this.pub(n, this.tn.det, 'snobots_msgs/msg/ColorDetection', { header: { stamp: hd.stamp, frame_id: hd.frame_id }, color: best ? best.color : '', found: !!best, x: best ? +best.x.toFixed(3) : 0, y: best ? +best.y.toFixed(3) : 0, area: best ? +best.area.toFixed(5) : 0 });
+    const dtF = 1 / clampN(+this.P('/usb_cam', 'framerate') || 15, 1, 30), red = !!best && best.color === 'red', mid = red && Math.abs(best.x) < 0.15 && Math.abs(best.y) < 0.2;
+    if (this.trk.on && mid) { this.trk.held += dtF; if (this.trk.held >= 3) this.complete('m6'); } else this.trk.held = 0;
+    if (this.fix) { const st = this.fix.stats; if (red) st.red++; if (this.trk.on && mid) st.trk += dtF; }
+  }
+  // /ball_locator: the ball's pixel becomes a ray, TF places the ray in the world, and the floor stops it
+  locateTick(hd) {
+    const n = '/ball_locator', b = this.objs.find(o => o.kind === 'ball'), To = this.kin.T.camera_optical_frame, C = AINEX_CAM; if (!b || !To || !this.tn.ball) return;
+    const p = K3.apply(K3.inv(To), b.x, b.y, b.z);
+    if (p[2] < 0.05 || p[2] > 3 || Math.abs(p[0] / p[2] * C.f) > C.w / 2 || Math.abs(p[1] / p[2] * C.f) > C.h / 2) return;   // not in this picture
+    const fr = hd.frame_id, tgt = String(this.P(n, 'target_frame') || 'base_link'), Pc = this.lookup('odom', fr), Pt = this.lookup('odom', tgt);
+    if (!Pc || !Pt) { const miss = !Pc ? fr : tgt; this.warnEvery('ball_tf', 3, n, `Could not transform the ball from '${fr || '(empty)'}' to '${tgt}': "${miss || '(empty)'}" passed to lookupTransform argument ${!Pc ? 'source_frame' : 'target_frame'} does not exist. `); return; }
+    const d = K3.rot(Pc, p[0] / p[2], p[1] / p[2], 1), r = +this.P(n, 'ball_radius') || 0.035;
+    if (d[2] > -1e-3) return;   // this ray never comes down to the floor
+    const s = (r - Pc[11]) / d[2], q = [Pc[3] + s * d[0], Pc[7] + s * d[1], r], pt = K3.apply(K3.inv(Pt), q[0], q[1], q[2]);
+    this.pub(n, this.tn.ball, 'geometry_msgs/msg/PointStamped', { header: { stamp: hd.stamp, frame_id: tgt }, point: { x: +pt[0].toFixed(4), y: +pt[1].toFixed(4), z: +pt[2].toFixed(4) } });
+    if (this.fix) { const st = this.fix.stats; st.ball++; if (Math.hypot(q[0] - b.x, q[1] - b.y) < 0.05) st.ballOk++; }
+  }
+  /* ---------- Fix it: what the tickets measure ---------- */
+  fixStats0() { return { det: 0, red: 0, trk: 0, ball: 0, ballOk: 0, walk: 0, falls: 0 }; }
+  fixPos() { return [this.nav.x, this.nav.y]; }
+  fixVx() { return this.v[0]; }
+  fixTick(st, dt, d) { if (this.mode === 'walk' && d < 0.2) st.walk += d; }
+  /* ---------- the vision missions, checked from the true state of the world ---------- */
+  tagSeen(id, node) {
+    const nd = this.bus.nodes.get(node); if (!nd || !nd.user || !AINEX_TAGS.some(t => t.id === id)) return;
+    this.vst.ids.add(id); if (this.vst.ids.size >= 3) this.complete('v4');
+  }
+  ballInImage() {
+    const b = this.objs.find(o => o.kind === 'ball'), Tc = this.kin.T.camera_link; if (!b || !Tc) return null;
+    const p = K3.apply(K3.inv(Tc), b.x, b.y, b.z); if (p[0] < 0.05) return null;
+    return [-p[1] / p[0] / Math.tan(this.H.hfov / 2), -p[2] / p[0] / Math.tan(this.H.camVfov * D2R / 2)];
+  }
+  visionTick(dt) {
+    const V = this.vst, b = this.objs.find(o => o.kind === 'ball'); if (!b) return;
+    // v2: the ball stays in the middle third of the picture while AiNex walks and your node steers the head
+    const uv = this.ballInImage();
+    if (uv && Math.abs(uv[0]) < 1 / 3 && Math.abs(uv[1]) < 1 / 3 && this.mode === 'walk' && this.t - V.headT < 1 && this.camRunning()) { V.watch += dt; if (V.watch >= 5) this.complete('v2'); }
+    // v3: standing still with the ball 10 to 25 cm in front, your node in charge of /cmd_vel
+    const n = this.nav, c = Math.cos(n.yaw), sn = Math.sin(n.yaw), dx = c * (b.x - n.x) + sn * (b.y - n.y), dy = -sn * (b.x - n.x) + c * (b.y - n.y);
+    const mine = this.cmd.kind === 'user' && this.t - this.cmd.t < 3;
+    V.ballRel = [dx, dy];
+    V.still = this.mode === 'stand' && mine && dx >= 0.1 && dx <= 0.25 && Math.abs(dy) <= 0.08 ? V.still + dt : 0;
+    if (V.still > 1) this.complete('v3');
+  }
+  /* ---------- the original vision demos: head tracking and nod/shake reactions on /color_detection ---------- */
   behaviors() {
     return {
       'color_tracking.launch.py': { label: 'head tracking', nodes: ['/head_tracker'], on: () => this.trk.on, set: (on) => this.setTracker(on), hello: '[head_tracker-1] [INFO] following the target_color blob with a P controller on head_pan / head_tilt' },
@@ -44,24 +236,6 @@ class AinexSim extends HumanoidSim {
     this.rx.cool = this.t + 3.2;
     this.pub('/color_reactor', '/action_group', 'std_msgs/msg/String', { data: m.color === 'red' ? 'nod' : 'shake' });
   }
-  behaviorsTick(dt) {
-    if (!this.every('det', dt, 1 / 15)) return;
-    const Tc = this.kin.T.camera_link; if (!Tc) return;
-    const Ti = K3.inv(Tc), hf = Math.tan(this.H.hfov / 2), vf = Math.tan(this.H.camVfov * D2R / 2);
-    const want = String(this.P('/color_detector', 'target_color') || 'red').toLowerCase(), minA = this.P('/color_detector', 'min_area') || 0;
-    let best = null;
-    for (const o of this.objs) {
-      if (o.kind !== 'block' || (want !== 'any' && o.color !== want)) continue;
-      const p = K3.apply(Ti, o.x, o.y, o.z); if (p[0] < 0.04) continue;
-      const u = -p[1] / p[0] / hf, v = -p[2] / p[0] / vf; if (Math.abs(u) > 1 || Math.abs(v) > 1 || p[0] > 3) continue;
-      const area = Math.pow(o.size / p[0], 2) / (4 * hf * vf); if (area < minA) continue;
-      const sticky = want === 'any' && this.det && this.det.color === o.color ? 1.8 : 1;   // keep following the same blob
-      if (!best || area * sticky > best.score) best = { color: o.color, x: u, y: v, area, score: area * sticky };
-    }
-    this.det = best;
-    this.pub('/color_detector', '/color_detection', 'snobots_msgs/msg/ColorDetection', { header: { stamp: stampNow(), frame_id: 'camera_link' }, color: best ? best.color : '', found: !!best, x: best ? +best.x.toFixed(3) : 0, y: best ? +best.y.toFixed(3) : 0, area: best ? +best.area.toFixed(5) : 0 });
-    if (this.trk.on && best && best.color === 'red' && Math.abs(best.x) < 0.15 && Math.abs(best.y) < 0.2) { this.trk.held += 1 / 15; if (this.trk.held >= 3) this.complete('m6'); } else this.trk.held = 0;
-  }
   buildWorld() {
     const F = AINEX_FIELD, W = this.world, gy = F.goalY, gd = F.goalD, gh = F.goalH, cx = (F.x0 + F.x1) / 2;
     // boards around the pitch
@@ -70,7 +244,7 @@ class AinexSim extends HumanoidSim {
     // goal: posts, crossbar and net
     [[F.x1, gy], [F.x1, -gy], [F.x1 + gd, gy], [F.x1 + gd, -gy]].forEach(([x, y]) => W.addCyl(x, y, 0.011, gh, { mu: 0.4, rest: 0.3 }));
     W.addBox([F.x1 + gd + 0.006, 0, gh / 2], [0.012, 2 * gy, gh], 0, { mu: 0.9 }); W.addBox([F.x1 + gd / 2, gy + 0.006, gh / 2], [gd, 0.012, gh], 0, { mu: 0.9 }); W.addBox([F.x1 + gd / 2, -gy - 0.006, gh / 2], [gd, 0.012, gh], 0, { mu: 0.9 });
-    W.addBox([F.x1 + gd / 2, 0, gh + 0.006], [gd + 0.02, 2 * gy + 0.02, 0.012]);
+    W.addBox([F.x1 + gd / 2, 0, gh + 0.006], [gd + 0.02, 2 * gy + 0.02, 0.012], 0, { float: true });   // the roof net floats: the goal mouth stays open
   }
   // the hoist sets AiNex down inside the pitch, clear of the boards and the goal
   hoistSpot(x, y) { const F = AINEX_FIELD; return [clampN(x, F.x0 + 0.2, F.x1 - 0.25), clampN(y, F.y0 + 0.2, F.y1 - 0.2)]; }
@@ -93,21 +267,34 @@ class AinexSim extends HumanoidSim {
     const rb = h('button', { class: 'btn btn-sm', html: icon('replay') + 'Reset ball' }); rb.addEventListener('click', () => { const b = this.objs.find(o => o.kind === 'ball'); if (b) this.placeObj(b, 0.45, 0); });
     w.append(h('div', { class: 'row-btns', style: 'margin-top:10px' }, rb));
   }
-  missionTick() {
+  missionTick(dt) {
     const s = this.stats;
     if (s.dist >= 1.0) this.complete('m1');
     if (s.turn >= Math.PI) this.complete('m2');
     if (s.side >= 0.3) this.complete('m3');
     if (s.cliDist >= 0.5) this.complete('m8');
     if (s.userDist >= 0.3 || s.userJoint >= 15) this.complete('m10');
+    this.visionTick(dt);
+    if (this.fix) SnoFix.tick(this, dt);
   }
   event(type, data) {
+    const V = this.vst;
     if (type === 'action' && data === 'wave') this.complete('m4');
+    else if (type === 'action' && data && typeof data === 'object' && /_kick$/.test(data.name)) { const nd = this.bus.nodes.get(data.from); if (nd && nd.user) V.kickT = this.t; }
     else if (type === 'rec_play' && data >= 2) this.complete('m5');
-    else if (type === 'goal') this.complete('m7');
-    else if (type === 'fall') this.fellOnce = true;
+    else if (type === 'goal') { this.complete('m7'); if (this.t - V.kickT < 6) this.complete('v5'); }
+    else if (type === 'fall') {
+      this.fellOnce = true; if (this.fix) { this.fix.stats.walk = 0; this.fix.stats.falls++; }
+      if (this.procs.ctl) this.log(this.ctl, 'WARN', `fall detected (body tilted ${Math.round(this.tilt() / D2R)}°): servos softened. Call ${this.H.standSrv} to get up`);
+    }
     else if (type === 'stood_up' && this.fellOnce) this.complete('m9');
     else if (type === 'joint_cmd' && data.kind === 'user') this.stats.userJoint++;
+    else if (type === 'cmd' && typeof data === 'string') {
+      const k = data.indexOf(':'), verb = data.slice(0, k), name = data.slice(k + 1);
+      if ((verb === 'hz' || verb === 'bw') && name === (this.tn.img || '/image_raw')) V.hz = true;
+      if (verb === 'echo' && name === (this.tn.info || '/camera_info')) V.info = true;
+      if (V.hz && V.info) this.complete('v1');
+    }
   }
   buildEnv(view, T) {
     const F = AINEX_FIELD, m = 0.18, W = F.x1 - F.x0 + 2 * m, Hh = F.y1 - F.y0 + 2 * m, mats = view.mats;
@@ -132,11 +319,23 @@ class AinexSim extends HumanoidSim {
     const net = new T.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.32, side: T.DoubleSide, roughness: 1 });
     const pl = (w, hh2, x, y, z, rx, ry) => { const p = new T.Mesh(new T.PlaneGeometry(w, hh2), net); p.position.set(x, y, z); p.rotation.set(rx, ry, 0); view.world.add(p); };
     pl(2 * gyy, gh, gx + gd, 0, gh / 2, Math.PI / 2, Math.PI / 2); pl(gd, gh, gx + gd / 2, gyy, gh / 2, Math.PI / 2, 0); pl(gd, gh, gx + gd / 2, -gyy, gh / 2, Math.PI / 2, 0); pl(gd, 2 * gyy, gx + gd / 2, 0, gh, 0, 0);
+    // ArUco tags printed on matte boards, each on a post
+    AINEX_TAGS.forEach(M => {
+      const code = ARUCO_4X4[M.id], cell = 16, side = M.size * 8 / 6, c = Math.cos(M.yaw), sn = Math.sin(M.yaw);
+      const tx = snoTex(T, 8 * cell, 8 * cell, (g) => { g.fillStyle = '#fff'; g.fillRect(0, 0, 8 * cell, 8 * cell); g.fillStyle = '#000'; g.fillRect(cell, cell, 6 * cell, 6 * cell); g.fillStyle = '#fff'; for (let i = 0; i < 16; i++) if ((code >> (15 - i)) & 1) g.fillRect((2 + i % 4) * cell, (2 + (i >> 2)) * cell, cell, cell); });
+      tx.magFilter = T.NearestFilter;
+      const sign = new T.Mesh(new T.PlaneGeometry(side, side), new T.MeshStandardMaterial({ map: tx, roughness: 0.92, metalness: 0 }));
+      sign.quaternion.setFromRotationMatrix(new T.Matrix4().makeBasis(new T.Vector3(-sn, c, 0), new T.Vector3(0, 0, 1), new T.Vector3(c, sn, 0)));
+      sign.position.set(M.x + c * 0.004, M.y + sn * 0.004, M.z); sign.receiveShadow = true; sign.userData.marker = M.id; view.world.add(sign);
+      const back = snoMesh(T, { s: 'box', size: [0.006, side + 0.01, side + 0.01], xyz: [M.x - c * 0.0005, M.y - sn * 0.0005, M.z], m: 'dark' }, mats); back.rotation.z = M.yaw; view.world.add(back);
+      const post = M.z - side / 2; view.world.add(snoMesh(T, { s: 'box', size: [0.012, 0.012, post], xyz: [M.x - c * 0.01, M.y - sn * 0.01, post / 2], m: 'dark' }, mats));
+    });
     this.objMesh = this.objs.map(o => {
       const g = o.kind === 'ball' ? snoMesh(T, { s: 'sph', size: [o.r], m: 'orange' }, mats) : snoMesh(T, { s: 'box', size: [o.size, o.size, o.size], m: o.color }, mats);
       if (o.kind === 'ball') { const st = new T.Mesh(new T.TorusGeometry(o.r * 0.999, o.r * 0.12, 8, 28), mats.white); g.children[0].add(st); const st2 = st.clone(); st2.rotation.y = Math.PI / 2; g.children[0].add(st2); }
       view.world.add(g); return g;
     });
+    this.camCap = view.addCamera(this.model.links.camera_link, AINEX_CAM);
   }
   syncEnv() {
     if (!this.objMesh) return;

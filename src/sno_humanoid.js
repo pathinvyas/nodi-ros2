@@ -38,6 +38,9 @@ function huAinex() {
     { s: 'box', size: [0.054, 0.07, 0.05], xyz: [0.004, 0, 0.027], m: 'dark' }, { s: 'box', size: [0.004, 0.062, 0.042], xyz: [0.0315, 0, 0.027], m: 'grey' },
     { s: 'cyl', size: [0.0115, 0.008], ax: 'x', xyz: [0.034, 0, 0.028], m: 'glass' }, { s: 'cyl', size: [0.0152, 0.003], ax: 'x', xyz: [0.0325, 0, 0.028], m: 'glow' }]);
   add({ name: 'camera_joint', parent: 'head_link', child: 'camera_link', type: 'fixed', xyz: [0.039, 0, 0.028] });
+  // OpenCV's view of the same camera: z forward, x right, y down (REP 103 optical frame)
+  add({ name: 'camera_optical_joint', parent: 'camera_link', child: 'camera_optical_frame', type: 'fixed', rpy: [-Math.PI / 2, 0, -Math.PI / 2] });
+  add({ name: 'imu_joint', parent: 'torso_link', child: 'imu_link', type: 'fixed', xyz: [0, 0, 0.05] });
   return { root: 'base_link', joints: J, visuals: V, masses: M };
 }
 function huR1() {
@@ -76,7 +79,7 @@ function huR1() {
 
 /* ---------- physics: collision shapes (simplified like URDF collision meshes) and servo models ---------- */
 function huAinexPhys() {
-  const coll = { base_link: false, torso_link: [{ t: 'box', size: [0.08, 0.1, 0.135], xyz: [-0.005, 0, 0.055] }], head_link: [{ t: 'box', size: [0.06, 0.072, 0.052], xyz: [0.004, 0, 0.026] }], neck_link: false, camera_link: false };
+  const coll = { base_link: false, torso_link: [{ t: 'box', size: [0.08, 0.1, 0.135], xyz: [-0.005, 0, 0.055] }], head_link: [{ t: 'box', size: [0.06, 0.072, 0.052], xyz: [0.004, 0, 0.026] }], neck_link: false, camera_link: false, camera_optical_frame: false, imu_link: false };
   for (const p of ['l_', 'r_']) Object.assign(coll, {
     [p + 'hip_yaw_link']: false, [p + 'hip_roll_link']: false, [p + 'ankle_link']: false, [p + 'sole_link']: false, [p + 'shoulder_link']: false, [p + 'forearm_link']: false, [p + 'finger_link']: false,
     [p + 'thigh_link']: [{ t: 'box', size: [0.032, 0.044, 0.09], xyz: [0, 0, -0.045] }],
@@ -214,6 +217,16 @@ class HumanoidSim extends SnoSim {
     if (this.pd) this.pdReset();
     this.readState(0);
   }
+  // stand the robot somewhere else (tools and tests; in the app the hoist puts it back on its feet)
+  teleport(x, y, yaw) {
+    const rb = this.rb, c = Math.cos(yaw), s = Math.sin(yaw), [px, py] = this.homePel;
+    this.names.forEach(n => { this.q[n] = this.home[n]; this.qt[n] = this.home[n]; this.dq[n] = 0; });
+    for (const n in rb.ji) { const k = rb.ji[n], v = this.home[n] || 0; rb.q[k] = v; rb.qt[k] = v; rb.vt[k] = 0; rb.tff[k] = 0; }
+    rb.setYaw(x + c * px - s * py, y + s * px + c * py, this.H.standZ + 0.0008, yaw); rb.zeroVel(); this.world.cache.clear();
+    this.walker.reset(Object.assign({}, this.home)); this.mode = 'stand'; this.act = null; this.ovl = null; this.queue = null; this.hoist = null;
+    this.v = [0, 0, 0]; this._pn = null; this.imuPrev = null;
+    this.readState(0);
+  }
   /* ---------- world: obstacles and loose objects ---------- */
   buildWorld() { }
   objsReset() {
@@ -317,6 +330,7 @@ class HumanoidSim extends SnoSim {
     this.readState(dt);
     this.objStep(dt);
     this.publish(dt);
+    this.camTick();
     this.tickStats(dt);
   }
   control(h, live) {

@@ -2,7 +2,8 @@
 // Each ticket starts the robot with a real fault in its ROS graph: a crashed driver, a bad parameter, a leftover remap,
 // mismatched QoS, a missing transform, a wrong frame_id or the wrong message type. You find the cause and fix it from
 // the terminal with ros2 commands, the way you would on a real robot. A ticket's setup is the robot's start-up
-// configuration (see LimoSim.restoreRobot); its check reads the live simulation, so any fix that works, counts.
+// configuration (see LimoSim.restoreRobot and AinexSim.restoreRobot); its check reads the live simulation, so any fix
+// that works, counts.
 const FIX_TICKETS = {
   limo: [
     {
@@ -76,17 +77,90 @@ const FIX_TICKETS = {
       debrief: "The joystick sent `geometry_msgs/msg/TwistStamped`, but the base expects `geometry_msgs/msg/Twist`. A publisher and a subscription only connect when both the name and the type match, and nothing warns you when they don't. Jazzy made this mix-up common: some packages now expect TwistStamped (ros2_control's diff drive controller, for example) while many drivers still use Twist, and teleop nodes have a parameter to choose. A real teleop node reads that parameter at start-up, so there you would restart it with `--ros-args -p publish_stamped_twist:=false`.",
     },
   ],
+  ainex: [
+    {
+      id: 'cam-down', title: 'AiNex is blind', level: 1, xp: 40, skills: ['nodes', 'topics'], from: 'Mei',
+      report: "Head tracking is on, but AiNex just stares ahead when I hold the red block in front of it, and the Vision tab shows no picture. The camera's light is on. It worked yesterday!",
+      goal: 'Get the head camera publishing `/image_raw` again so the colour detector sees the block.',
+      setup: () => ({ cam: false, died: 'cam', tracking: true }),
+      check: (sim, st) => ({ items: [['`/image_raw` has a publisher', fixPubs(sim, '/image_raw') > 0], ['The colour detector is getting images', st.det >= 15]] }),
+      hints: ['Start where the data begins: `ros2 topic info /image_raw`. Who publishes it?', 'Is the camera driver running? `ros2 node list`, then read the robot log in the Fix it tab: what happened to `usb_cam_node_exe`?', 'Start it again: `ros2 run usb_cam usb_cam_node_exe`. It keeps running in that terminal, so open a second terminal (+) for more commands.'],
+      fix: 'ros2 run usb_cam usb_cam_node_exe',
+      debrief: 'The camera driver died at start-up because `/dev/video0` was not there yet (a USB camera can take a moment to appear after boot), so nothing published `/image_raw` and the colour detector simply waited. Check a sensor the same way every time: `ros2 node list` (is the driver running?), `ros2 topic info` (how many publishers?), and the launch output for the reason. A launch file can retry a crashed driver for you with `respawn=True`.',
+    },
+    {
+      id: 'min-area', title: 'Head tracking ignores the red block', level: 1, xp: 40, skills: ['parameters'], from: 'Theo',
+      report: "The camera works (I can see the red block in the Vision tab) and head tracking is on, but AiNex won't look at the block. Someone tuned the colour detector at the expo so it would ignore red T-shirts in the crowd.",
+      goal: 'Head tracking keeps the red block centred for 2 seconds.',
+      setup: () => ({ det: { params: { min_area: 0.02 } }, tracking: true }),
+      check: (sim, st) => ({ items: [['The colour detector reports the red block', st.red >= 10], [`Head tracking keeps it centred (${Math.min(st.trk, 2).toFixed(1)} of 2 s)`, st.trk >= 2]] }),
+      hints: ['See what the detector says: `ros2 topic echo /color_detection`. Is `found` ever true?', 'Detectors have thresholds. List them with `ros2 param list /color_detector`, then `ros2 param get` each one. `area` is the fraction of the picture a blob covers: how big could a 5 cm block be?', 'Lower the size threshold: `ros2 param set /color_detector min_area 0.0001`'],
+      fix: 'ros2 param set /color_detector min_area 0.0001',
+      debrief: '`min_area` was 0.02, so a blob had to cover 2% of the picture to count. The red block is 5 cm across and over a metre away, so in a 120° wide-angle picture it covers about 0.03%, and every detection was thrown away. Thresholds are tuned for one place and one distance, and wide-angle lenses make things look much smaller than you expect. Echo a detector\'s output and check its parameters before you blame the camera.',
+    },
+    {
+      id: 'trip', title: 'AiNex trips over its own feet', level: 2, xp: 60, skills: ['parameters'], from: 'Priya',
+      report: 'Someone tuned the gait so AiNex walks more quietly on the demo table. Now it stumbles and falls after a few steps. Standing and waving are fine.',
+      goal: 'Walk AiNex half a metre without falling.',
+      setup: () => ({ ctl: { params: { step_height: 0.008 } } }),
+      check: (sim, st) => ({ items: [[`AiNex walks 0.5 m without falling (${Math.min(st.walk, 0.5).toFixed(2)} of 0.5 m)`, st.walk >= 0.5]] }),
+      hints: ['Walk a few steps (W, or the joystick) and watch the feet closely in the 3D view. What does the swinging foot do?', 'Gait settings are parameters of the walking controller: `ros2 param dump /ainex_controller`. Which one decides how high a foot lifts?', 'Lift the feet again: `ros2 param set /ainex_controller step_height 0.025`. If AiNex is lying down, press Stand up in the Control tab first.'],
+      fix: 'ros2 param set /ainex_controller step_height 0.025',
+      debrief: '`step_height` had been lowered to 8 mm. The swinging foot barely left the floor, scuffed it and tripped the robot. A gait is a set of trade-offs: lower steps are quieter but leave no margin for an uneven floor or a little body sway. Change one gait parameter at a time, test on the floor, and keep the values that work in the controller\'s parameter file.',
+    },
+    {
+      id: 'cam-remap', title: 'Pictures, but nobody looks', level: 2, xp: 60, skills: ['remapping', 'topics'], from: 'Kai',
+      report: "Since Alex's two-robot demo, head tracking does nothing. The camera is fine: in the Vision tab I can pick its picture and see the pitch. But the colour detector never finds anything.",
+      goal: 'Get the camera images to the colour detector.',
+      setup: () => ({ cam: { remaps: [['image_raw', '/ainex/image_raw'], ['camera_info', '/ainex/camera_info']] }, tracking: true }),
+      check: (sim, st) => ({ items: [['The colour detector is getting images', st.det >= 15]] }),
+      hints: ['Which image topics exist? `ros2 topic list`, then `ros2 topic info` on each one.', 'What does each node really use? `ros2 node info /usb_cam` and `ros2 node info /color_detector`', 'Restart the driver without the leftover remap: `ros2 run usb_cam usb_cam_node_exe`. Or bridge the two names: `ros2 run topic_tools relay /ainex/image_raw /image_raw`'],
+      fix: 'ros2 run usb_cam usb_cam_node_exe',
+      debrief: 'The camera had been started with remaps left over from a two-robot setup (`image_raw:=/ainex/image_raw`), so it published `/ainex/image_raw` while the detector waited on `/image_raw`. Nothing warns you: a publisher and a subscription on different names simply never meet. `ros2 node info` shows the names a node really ended up with. For several robots, give each robot its own namespace instead of renaming topics one at a time.',
+    },
+    {
+      id: 'cam-qos', title: 'Echo sees pictures, the detector does not', level: 2, xp: 70, skills: ['QoS'], from: 'Jordan',
+      report: "`ros2 topic hz /image_raw` says the camera runs at 15 Hz, but the colour detector never sees a thing and head tracking is dead. Someone changed the camera's settings yesterday to save Wi-Fi bandwidth.",
+      goal: 'Get the camera images to the colour detector.',
+      setup: () => ({ cam: { params: { 'qos_overrides./image_raw.publisher.reliability': 'best_effort' } }, tracking: true }),
+      check: (sim, st) => ({ items: [['The colour detector is getting images', st.det >= 15]] }),
+      hints: ["If a tool gets the data but a node doesn't, compare how they connect: `ros2 topic info /image_raw --verbose`", 'Compare Reliability for the publisher and the subscription, and read the warnings in the robot log. A RELIABLE subscription cannot take messages from a BEST_EFFORT publisher.', 'Restart the camera reliably: `ros2 run usb_cam usb_cam_node_exe --ros-args -p qos_overrides./image_raw.publisher.reliability:=reliable` (or restart the detector with `ros2 run ainex_vision color_detector --ros-args -p qos_overrides./image_raw.subscription.reliability:=best_effort`).'],
+      fix: 'ros2 run usb_cam usb_cam_node_exe --ros-args -p qos_overrides./image_raw.publisher.reliability:=reliable',
+      debrief: 'The camera published `/image_raw` as BEST_EFFORT, but the colour detector asked for RELIABLE. A subscription only connects to a publisher that offers at least what it requests, so the two never connected, and each side logged one warning about incompatible QoS. `ros2 topic hz` and `echo` adapt their QoS to the publisher, which is why they worked. Images are often sent best effort on purpose (a late frame is useless), so make every image subscriber agree, for example with the sensor-data QoS profile.',
+    },
+    {
+      id: 'frame-id', title: 'Where is the ball?', level: 3, xp: 90, skills: ['TF', 'parameters'], from: 'Sam',
+      report: "We copied the camera settings from our other robot. The pictures look perfect, but `/ball_position` stays silent and the ball locator keeps complaining about a frame. `tf2_echo base_link camera_optical_frame` works, so the tree is fine, right?",
+      goal: "Make the images' frame part of the TF tree so the ball locator can place the ball.",
+      setup: () => ({ cam: { params: { frame_id: 'camera' } } }),
+      check: (sim, st) => { const fr = String(sim.P('/usb_cam', 'frame_id') || ''), e = fr ? fixTfError(sim, fr, 'camera_optical_frame') : null; return { items: [["The images' frame is in the TF tree", !!e], ['…at the camera, with z pointing forward', !!e && e.ok], ['`/ball_locator` places the ball', st.ballOk >= 10]], note: e && !e.ok ? fixOff(e, `'${fr}' is in the tree now, but it is`, 'so the ball lands in the wrong place') + ' Stop that publisher (Ctrl+C) and try again.' : '' }; },
+      hints: ['Which frame do the images say they were taken in? `ros2 topic echo /camera_info --once`, then look at `header.frame_id`.', 'Does the tree know that frame? `ros2 run tf2_ros tf2_echo base_link camera`', "Restart the camera with this robot's frame name: `ros2 run usb_cam usb_cam_node_exe --ros-args -p frame_id:=camera_optical_frame` (a zero-offset static transform from `camera_optical_frame` to `camera` works too)."],
+      fix: 'ros2 run usb_cam usb_cam_node_exe --ros-args -p frame_id:=camera_optical_frame',
+      debrief: "Every image names the frame it was taken in, in `header.frame_id`. The copied settings stamped the images `camera`, but in AiNex's tree the camera is `camera_optical_frame`, so every lookup failed even though the camera's transform existed. Mind the optical convention as well: image frames point z forward, x right and y down, while `camera_link` points x forward. If you bridge the names with a static transform, hang it from `camera_optical_frame` with no rotation, not from `camera_link`.",
+    },
+    {
+      id: 'stamped', title: "AiNex won't walk from the joystick", level: 3, xp: 90, skills: ['message types'], from: 'Priya',
+      report: "After the Jazzy update the joystick publishes on `/cmd_vel` and the walking controller subscribes to `/cmd_vel`, but AiNex won't take a single step. Publishing from the terminal with `ros2 topic pub` works fine!",
+      goal: 'Walk AiNex half a metre with the joystick (Control tab or W A S D).',
+      setup: () => ({ joy: 'stamped' }),
+      check: (sim, st) => ({ items: [[`AiNex walks from the joystick (${Math.min(st.joy, 0.5).toFixed(2)} of 0.5 m)`, st.joy >= 0.5]] }),
+      hints: ["The same name doesn't mean the same message: `ros2 topic list -t`", 'Which type does each side use? `ros2 topic info /cmd_vel --verbose`', 'Make the joystick send plain Twist again: `ros2 param set /teleop_panel publish_stamped_twist false`'],
+      fix: 'ros2 param set /teleop_panel publish_stamped_twist false',
+      debrief: "The joystick sent `geometry_msgs/msg/TwistStamped`, but the walking controller expects `geometry_msgs/msg/Twist`. A publisher and a subscription only connect when both the name and the type match, and nothing warns you when they don't. `ros2 topic pub` worked because you typed the type yourself. Jazzy made this mix-up common, since some packages now take TwistStamped velocity commands while others still take Twist.",
+    },
+  ],
 };
-// how far a published frame is from where the lidar really sits on the robot (both relative to base_footprint)
-function fixTfError(sim, frame) {
+const fixPubs = (sim, topic) => { const T = sim.bus.topics.get(topic); return T ? T.pubs.size : 0; };
+// how far a published frame is from the sensor it should name (the lidar unless told otherwise), both relative to the robot's root
+function fixTfError(sim, frame, link = 'laser_link') {
   const M = sim.lookup(sim.kin.root, frame); if (!M) return null;
-  const T = sim.kin.T, A = K3.mul(K3.inv(T[sim.kin.root]), T.laser_link);
+  const T = sim.kin.T, A = K3.mul(K3.inv(T[sim.kin.root]), T[link]);
   const cm = Math.hypot(M[3] - A[3], M[7] - A[7], M[11] - A[11]) * 100;
   let tr = 0; [0, 1, 2, 4, 5, 6, 8, 9, 10].forEach(i => { tr += M[i] * A[i]; });   // trace(Rm^T Ra): the angle between the two orientations
   const deg = Math.acos(Math.max(-1, Math.min(1, (tr - 1) / 2))) * 180 / Math.PI;
   return { cm, deg, ok: cm <= 1.5 && deg <= 3 };
 }
-const fixOff = (e, lead) => `${lead} ${e.cm.toFixed(1)} cm${e.deg > 3 ? ` and ${e.deg.toFixed(0)}°` : ''} away from the real mount, so the map smears.`;
+const fixOff = (e, lead, so = 'so the map smears') => `${lead} ${e.cm.toFixed(1)} cm${e.deg > 3 ? ` and ${e.deg.toFixed(0)}°` : ''} away from the real mount, ${so}.`;
 const fixLevel = (n) => `<span class="fix-lvl" role="img" aria-label="Difficulty ${n} of 3">${[1, 2, 3].map(i => `<i class="${i <= n ? 'on' : ''}"></i>`).join('')}</span>`;
 const fixTime = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 const SnoFix = {
@@ -105,7 +179,7 @@ const SnoFix = {
     sim.fix = null; sim.logs = []; sim.reset();
     sim.onLog = () => this.logged(sim);
     sim.restoreRobot(tk.setup(sim));
-    sim.fix = { id, t0: sim.t, hints: 0, shown: false, solved: false, stats: { slam: 0, joy: 0, vmax: 0 }, res: null, sig: '' };
+    sim.fix = { id, t0: sim.t, hints: 0, shown: false, solved: false, stats: Object.assign({ slam: 0, joy: 0, vmax: 0 }, sim.fixStats0 ? sim.fixStats0() : {}), res: null, sig: '' };
     const T = sim.tp && sim.tp.term(); if (T) T.print(`\n── Ticket: ${tk.title} ──\n${sim.def.name} was restarted. Its launch output is in the Fix it tab (and on /rosout).\nFind the fault and fix it with ros2 commands.`, 'i');
     Sound.play('tap'); SnoUI.renderMissionBar(); SnoUI.focusTab('fix'); this.paintLog(sim);
     sim.event('fix_start', id);
@@ -118,11 +192,12 @@ const SnoFix = {
   },
   tick(sim, dt) {
     const F = sim.fix, tk = this.ticket(sim); if (!F || !tk || F.solved) return;
-    const st = F.stats, prev = F.prev || [sim.x, sim.y], d = Math.hypot(sim.x - prev[0], sim.y - prev[1]); F.prev = [sim.x, sim.y];
+    const st = F.stats, pos = sim.fixPos ? sim.fixPos() : [sim.x, sim.y], prev = F.prev || pos, d = Math.hypot(pos[0] - prev[0], pos[1] - prev[1]); F.prev = pos;
     // joystick distance counts only when the joystick's own commands reach the base (directly or through a relay)
     const tl = sim._tele, joy = tl && sim.t - tl.last < 0.35 && (tl.vx || tl.vy || tl.wz), src = sim.cmd.src || '';
     if (joy && sim.cmdLive(0.35) && (src === '/teleop_panel' || src.startsWith('/relay')) && d < 0.5) st.joy += d;
-    if (sim.cmdLive(0.35)) st.vmax = Math.max(st.vmax, Math.abs(sim.vx || 0));
+    if (sim.cmdLive(0.35)) st.vmax = Math.max(st.vmax, Math.abs(sim.fixVx ? sim.fixVx() : sim.vx || 0));
+    if (sim.fixTick) sim.fixTick(st, dt, d);
     F.acc = (F.acc || 0) + dt; if (F.acc < 0.25) return; F.acc = 0;
     const res = tk.check(sim, st); res.ok = res.items.every(x => x[1]);
     const sig = JSON.stringify(res); if (sig !== F.sig) { F.sig = sig; F.res = res; this.paint(sim); }

@@ -384,8 +384,9 @@ class PhysWorld {
   add(s) { s.world = this; s.uid = ++this.gid; this.sys.push(s); s.geoms.forEach(g => { g.id = ++this.gid; }); s.pool = null; return s; }
   remove(s) { const i = this.sys.indexOf(s); if (i >= 0) this.sys.splice(i, 1); }
   // static box: centre, full size, yaw (extends a little below the floor so it never pulls things down)
+  // a static box reaches down into the floor (no gap for things to slip under) unless o.float: true (a roof, a shelf)
   addBox(c, size, yaw = 0, o = {}) {
-    const bot = c[2] - size[2] / 2, z0 = Math.min(bot, -0.05), top = c[2] + size[2] / 2, cz = (z0 + top) / 2, hz = (top - z0) / 2;
+    const bot = c[2] - size[2] / 2, z0 = o.float ? bot : Math.min(bot, -0.05), top = c[2] + size[2] / 2, cz = (z0 + top) / 2, hz = (top - z0) / 2;
     const g = phGeom(PH_BOX, [size[0] / 2, size[1] / 2, hz], K3.fromRPY(c[0], c[1], cz, 0, 0, yaw), Object.assign({ mu: 0.6 }, o));
     g.W = g.T; g.id = ++this.gid; g.static = true; this.statics.push(g); return g;
   }
