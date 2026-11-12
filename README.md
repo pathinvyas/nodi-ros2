@@ -14,7 +14,7 @@ A game-like ROS 2 course that runs entirely in the browser, in a single web page
 |---|---|
 | **Learn** | 12 units, 26 lessons and 153 exercises on ROS 2 Jazzy: the command line, publishers and subscribers, services, custom interfaces, parameters, launch files and TF2, in Python and C++, ending with a driver node for a microcontroller. Lessons are short animated scenes followed by a mix of exercise types (multiple choice, fill in the code, spot the bug, order the steps, drive the turtle). |
 | **Robot Lab** | A 2D robot with a live ROS 2 graph. Use `ros2 topic echo`, `ros2 param set` and friends in the terminal, or write Python nodes with an rclpy-style API. Python runs in your browser through Pyodide. |
-| **SnoBots Robots** | Physics simulators of a Hiwonder AiNex (24-joint small humanoid), a Unitree R1 (humanoid), an AgileX LIMO (four wheel modes) and a LIMO Cobot (LIMO with a 6-axis arm). Each has missions, a terminal, a Python code tab and a live topic graph. LIMO also has **broken-robot missions** (tickets where the robot starts with a fault that you fix with `ros2` commands) and a **Vision lab** (a simulated camera and OpenCV in Python). |
+| **SnoBots Robots** | Physics simulators of a Hiwonder AiNex (24-joint small humanoid), a Unitree R1 (humanoid), an AgileX LIMO (four wheel modes) and a LIMO Cobot (LIMO with a 6-axis arm). Each has missions, a terminal, a Python code tab and a live topic graph. LIMO and AiNex also have **broken-robot missions** (tickets where the robot starts with a fault that you fix with `ros2` commands) and a **Vision lab** (a simulated camera and OpenCV in Python). |
 | **Library** | Books and guides to read inside the app. It has a PDF reader with search (every match highlighted on the page, plus a results list), a contents panel, zoom, selectable text and a saved place in every book. Readers can also open their own PDFs, which stay in their browser. |
 | **Practice, Notebook, Profile** | Review rounds, unit notes, XP, streaks and badges. Progress is saved in the browser. |
 
@@ -41,7 +41,7 @@ Honest limits: the real Unitree R1 walks with a learned (reinforcement-learning)
 
 ## Broken-robot missions
 
-LIMO's **Fix it** tab has seven tickets. Each one restarts the robot with a real fault in its ROS graph and a bug report from a teammate. There is no button that fixes it: you find the cause and fix it in the terminal, as you would on a real robot.
+LIMO and AiNex each have a **Fix it** tab with seven tickets. Each one restarts the robot with a real fault in its ROS graph and a bug report from a teammate. There is no button that fixes it: you find the cause and fix it in the terminal, as you would on a real robot.
 
 ![A Fix it ticket: SLAM gets no scans because of a QoS mismatch](docs/screenshots/limo-fix-it.jpg)
 
@@ -55,17 +55,33 @@ LIMO's **Fix it** tab has seven tickets. Each one restarts the robot with a real
 | Two names for one lidar | scans say `frame_id: laser`, the tree says `laser_link` | `header.frame_id`, read-only parameters |
 | Same topic, different language | the joystick sends `TwistStamped`, the base wants `Twist` | `ros2 topic list -t`, message types |
 
+AiNex's tickets are about its head camera, its vision nodes and its walking controller. Its bringup starts `robot_state_publisher`, the walking controller, the `usb_cam` driver, a colour detector and a ball locator (which turns the ball's pixel into a point on the floor through TF).
+
+| Ticket | The fault | What you practise |
+|---|---|---|
+| AiNex is blind | the camera driver crashed at start-up (`/dev/video0` was not there yet) | `ros2 node list`, `ros2 topic info`, `ros2 run` |
+| Head tracking ignores the red block | the detector's `min_area` was raised far too high | `ros2 topic echo`, `ros2 param get/set` |
+| AiNex trips over its own feet | `step_height` lowered to 8 mm, so the swinging foot scuffs the floor | gait parameters, `ros2 param dump` |
+| Pictures, but nobody looks | the camera still has remaps from a two-robot demo | `ros2 node info`, remapping, `topic_tools relay` |
+| Echo sees pictures, the detector does not | the camera publishes best effort, the detector wants reliable | `ros2 topic info --verbose`, QoS overrides |
+| Where is the ball? | images stamped `frame_id: camera`, a frame the tree doesn't have | `header.frame_id`, optical frames, `static_transform_publisher` |
+| AiNex won't walk from the joystick | the joystick sends `TwistStamped`, the controller wants `Twist` | `ros2 topic list -t`, message types |
+
 This works because the simulated graph follows the same rules as ROS 2: the robot's own nodes are processes you can stop and start again with `--ros-args -r … -p …`, a parameter of the wrong type crashes a node, publishers and subscriptions with incompatible QoS never connect (and warn once, like DDS discovery), latched `/tf_static` keeps each publisher's transforms, and the TF tree only contains frames that someone is actually publishing. A ticket checks the live simulation, so any fix that really works counts. Hints cost XP.
 
 ## The Vision lab
 
-LIMO has a front colour camera, published the way a ROS 2 camera driver publishes it, and the Python tab runs OpenCV. The **Vision** tab is a small image viewer: pick any `sensor_msgs/Image` topic, then click a pixel (or use the arrow keys) to read its BGR and OpenCV HSV values, which are the numbers `cv2.inRange` needs.
+LIMO and AiNex each have a camera, published the way a ROS 2 camera driver publishes it, and the Python tab runs OpenCV. The **Vision** tab is a small image viewer: pick any `sensor_msgs/Image` topic, then click a pixel (or use the arrow keys) to read its BGR and OpenCV HSV values, which are the numbers `cv2.inRange` needs.
+
+- **OpenCV in Python.** `import cv2` loads OpenCV 4.10 (with the `aruco` module) and NumPy into Pyodide. The first run downloads about 15 MB, and the browser caches it after that. `cv_bridge.CvBridge` converts images both ways (`rgb8`, `bgr8`, `mono8`, `mono16`, `32FC1` and more), and `cv2.imshow` opens a small window over the 3D view (`cv2.waitKey` returns -1, as it does with no key pressed).
+- **Lazy cameras.** A camera renders the 3D scene from its pose in the TF tree, stamped on the sim clock, but only while a node wants the pixels, so `ros2 topic hz` and `ros2 topic bw` start it like any other subscriber. Both are ideal pinholes: `camera_info` has the real intrinsics `K` and no distortion.
+- **Checked from the world.** Like the Fix it tickets, the missions check the true state of the world (where the robot and the ball really are), and only count when your node is in charge.
+
+### LIMO
 
 ![The line follower's cv2.imshow windows over the 3D view, and the Vision tab reading a pixel on the yellow line](docs/screenshots/limo-vision.jpg)
 
-- **The camera.** The `/camera/camera` node publishes `/camera/color/image_raw` (320×240 `rgb8`) and `/camera/color/camera_info` (an ideal pinhole: `K` matches the 56° vertical field of view, no distortion). It renders the 3D scene from the camera's pose in the TF tree (`camera_color_optical_frame`, z forward), stamped on the sim clock. It only renders while something subscribes, so `ros2 topic hz` and `ros2 topic bw` start it like any other subscriber. `color_fps` and `enable_color` are parameters.
-- **OpenCV in Python.** `import cv2` loads OpenCV 4.10 (with the `aruco` module) and NumPy into Pyodide. The first run downloads about 15 MB, and the browser caches it after that. `cv_bridge.CvBridge` converts images both ways (`rgb8`, `bgr8`, `mono8`, `mono16`, `32FC1` and more), and `cv2.imshow` opens a small window over the 3D view (`cv2.waitKey` returns -1, as it does with no key pressed).
-- **Things to look at.** The yellow centre line, five ArUco markers (`DICT_4X4_50`, 12 cm) on the walls and a kiosk, and a red and a magenta ball that roll when LIMO pushes them.
+The `/camera/camera` node publishes `/camera/color/image_raw` (320×240 `rgb8`, 10 Hz, a 56° vertical field of view) and `/camera/color/camera_info`, in `camera_color_optical_frame`. `color_fps` and `enable_color` are parameters. Around the arena: the yellow centre line, five ArUco markers (`DICT_4X4_50`, 12 cm) on the walls and a kiosk, and a red and a magenta ball that roll when LIMO pushes them.
 
 | Mission | What you do | Starter code |
 |---|---|---|
@@ -75,7 +91,19 @@ LIMO has a front colour camera, published the way a ROS 2 camera driver publishe
 | Marker reader | detect ArUco markers and publish four different IDs on `/marker_id` | marker reader |
 | Dock at marker 7 | use `solvePnP` to park the camera 0.5 m in front of marker 7, square to it | marker reader |
 
-Like the Fix it tickets, the missions check the true state of the world (where the robot and the ball really are), and only count when your node is driving.
+### AiNex
+
+![AiNex walking up to the ball with the ball walker's cv2.imshow window, and its head camera in the Vision tab](docs/screenshots/ainex-vision.jpg)
+
+The head camera is a `usb_cam` driver: `/image_raw` (320×240 `rgb8`, 15 Hz) and `/camera_info`, in `camera_optical_frame`, through a 120° (diagonal) wide-angle lens. Your node aims it with `head_pan` and `head_tilt` on `/joint_commands`. On the pitch: the orange ball, three coloured blocks, and ArUco tags (`DICT_4X4_50`, 15 cm) on posts, plus a 20 cm tag 0 above the goal. Look down too far and the camera sees AiNex's own orange chest, which a careless colour filter will chase.
+
+| Mission | What you do | Starter code |
+|---|---|---|
+| Camera check | measure the image rate with `ros2 topic hz` and read the intrinsics from `camera_info` | |
+| Watch the ball | turn the head to keep the orange ball in the middle of the picture while AiNex walks | ball tracker (head) |
+| Walk to the ball | find the ball, turn to it and walk until it is 10–25 cm in front | walk to the ball |
+| Tag reader | detect ArUco tags around the pitch and publish three different IDs on `/marker_id` | tag reader |
+| Vision striker | line up with the goal and score from a kick your node asks for on `/action_group` | walk to the ball |
 
 ## The Library
 
@@ -115,7 +143,8 @@ npm test
 - `tests/physics.test.js` checks the engine against textbook answers: resting contact, Coulomb sliding distance, rolling without slipping, free fall of an articulated body, pendulum period.
 - `tests/library.test.js` checks the Library list: shipped books are real PDFs with their covers, and bring-your-own-copy books ship no file.
 - `tests/fix.test.js` opens every broken-robot ticket, checks that its fault is really there, and applies the fixes a ROS developer would try (restarting a node, `param set`, a relay, a static transform). It also checks the QoS, message-type and latching rules the tickets rely on, and that near misses (a transform 9 cm off, driving with `topic pub`) don't count.
-- `tests/vision.test.js` checks the camera and the vision missions: `camera_info` matches the field of view, the optical frame points z forward, images are only rendered while someone subscribes, the ArUco codes match OpenCV's, the pixel picker's HSV matches `cv2.cvtColor`, the starter thresholds catch the right colours, and each mission counts only when your node does the job.
+- `tests/vision.test.js` checks LIMO's camera and vision missions: `camera_info` matches the field of view, the optical frame points z forward, images are only rendered while someone subscribes, the ArUco codes match OpenCV's, the pixel picker's HSV matches `cv2.cvtColor`, the starter thresholds catch the right colours, and each mission counts only when your node does the job.
+- `tests/ainex_lab.test.js` checks AiNex as a ROS graph: its bringup, a TF tree that only holds published frames, and a camera that renders only for real subscribers while still feeding the robot's own vision nodes. It opens all seven AiNex tickets and fixes each one the usual ways (including the wrong bridge that a ticket must catch), and checks the five vision missions, the starter colour thresholds and the tag codes.
 - `tests/robots.test.js` drives the four robots:
   - AiNex stands, walks, turns, kicks, catches a push and is stood back up after a hard one
   - R1 walks at 0.4 m/s, collapses in damping mode and holds a joint in low-level PD mode
@@ -141,7 +170,7 @@ src/
   sno_walk.js       biped walking controller (LIPM / DCM)
   sno_core.js       SnoBots 3D view, panels, physics tools
   sno_humanoid.js   humanoid models and simulator
-  sno_robots.js     AiNex and R1 specifics
+  sno_robots.js     AiNex (its bringup, camera, vision nodes and missions) and R1
   sno_car.js        LIMO and LIMO Cobot
   sno_defs.js       robot definitions, missions, code templates
   sno_fix.js        broken-robot missions (Fix it tickets)

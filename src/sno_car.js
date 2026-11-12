@@ -201,7 +201,8 @@ const LIMO_ARENA = {
   balls: [{ color: 'red', x: 2.55, y: 0.27 }, { color: 'magenta', x: 0.4, y: 0.35 }],
 };
 // ArUco DICT_4X4_50 codes: the 4 x 4 inner cells row by row, 1 = white (checked against OpenCV's dictionary)
-const ARUCO_4X4 = { 3: 39238, 5: 31181, 7: 50418, 12: 3767, 21: 45099 };
+// DICT_4X4_50 codes for the markers in the arenas (LIMO: 3 5 7 12 21, AiNex: 0 1 2 4 8): inner 4x4 cells, row by row, white = 1
+const ARUCO_4X4 = { 0: 46386, 1: 3994, 2: 13101, 3: 39238, 4: 21662, 5: 31181, 7: 50418, 8: 65242, 12: 3767, 21: 45099 };
 const ARUCO_SIZE = 0.12, ARUCO_Z = 0.13, BALL_R = 0.05;
 const COBOT_ARENA = {
   W: 5, H: 4,
@@ -281,6 +282,8 @@ class LimoSim extends SnoSim {
     };
     B.onRemove = (node) => { this.tfStatic.delete(node); };
     B.topic('/tf_static', 'tf2_msgs/msg/TFMessage').latched = true;
+    const C = LIMO_CAM, cam = '/camera/camera';
+    this.camCfg = { key: 'camera', node: cam, w: C.w, h: C.h, f: +((C.h / 2) / Math.tan(C.vfov * Math.PI / 360)).toFixed(4), fps: () => this.P(cam, 'color_fps'), on: () => this.P(cam, 'enable_color') !== false, frame: () => 'camera_color_optical_frame' };
     this.restoreRobot({});
     if (this.lane) { this.node('/lane_detector', 'vision', [['lookahead', 0.3, 'double', [0.1, 0.8]]]); B.advertise('/lane_detector', '/lane_error', 'std_msgs/msg/Float64'); B.advertise('/lane_detector', '/traffic_light', 'std_msgs/msg/String'); }
     this.setupExtra();
@@ -292,22 +295,12 @@ class LimoSim extends SnoSim {
   // starts it with { params, remaps }, cfg.died names a node that crashes at start-up, cfg.slam adds SLAM, and
   // cfg.joy starts the joystick's teleop node publishing 'twist' or 'stamped' (TwistStamped) on /cmd_vel.
   restoreRobot(cfg = {}) {
-    const B = this.bus, D = this.procDefs();
+    const B = this.bus;
     Object.keys(this.procs).forEach(k => this.stopProc(k));
     ['nav', 'lane'].forEach(k => { if (this.beh[k]) this.setBeh(k, false); });
     [...B.nodes.keys()].filter(n => n === '/teleop_panel' || n === '/goal_tool' || /^\/(static_transform_publisher_|relay)/.test(n)).forEach(n => B.removeNode(n));
     this._tele = null; this.keys = {}; this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' }; this.warnT = {}; this.lastWarn = ''; B.clashes.clear();
-    const d0 = new Date(), p2 = (v) => String(v).padStart(2, '0'), day = `${d0.getFullYear()}-${p2(d0.getMonth() + 1)}-${p2(d0.getDate())}-${p2(d0.getHours())}-${p2(d0.getMinutes())}-${p2(d0.getSeconds())}`;
-    const keys = ['rsp', 'laser_tf', 'base', 'lidar', 'camera'].concat(cfg.slam ? ['slam'] : []).filter(k => cfg[k] !== false || cfg.died === k);
-    this.launchLabel = {};
-    this.log('launch', 'INFO', `All log files can be found below /home/learner/.ros/log/${day}-${this.id}-sim-${B.pid}`, true);
-    this.log('launch', 'INFO', 'Default logging verbosity is set to INFO', true);
-    const run = keys.map((k, i) => { const d = D[k], label = `${d.exe}-${i + 1}`, pid = ++B.pid; this.launchLabel[d.node] = label; this.log(label, 'INFO', `process started with pid [${pid}]`, true); return [k, d, label, pid]; });
-    run.forEach(([k, d, label, pid]) => {
-      if (cfg[k] !== false) { const c = cfg[k]; this.startProc(k, c && typeof c === 'object' ? c : {}); return; }
-      if (d.crash) this.log(label, 'ERROR', d.crash, 'out');
-      this.log(label, 'ERROR', `process has died [pid ${pid}, exit code 1, cmd '/opt/ros/jazzy/lib/${d.pkg}/${d.exe} --ros-args -r __node:=${d.node.slice(1)} --params-file /tmp/launch_params_${Math.random().toString(36).slice(2, 10)}'].`, true);
-    });
+    this.launchProcs(['rsp', 'laser_tf', 'base', 'lidar', 'camera'].concat(cfg.slam ? ['slam'] : []), cfg);
     if (cfg.joy) { const st = cfg.joy === 'stamped'; this.node('/teleop_panel', 'teleop', [['publish_stamped_twist', st, 'bool']]); B.advertise('/teleop_panel', '/cmd_vel', st ? 'geometry_msgs/msg/TwistStamped' : 'geometry_msgs/msg/Twist'); }
     if (SnoUI.cur === this) SnoUI.refreshTab('control');
   }
@@ -365,30 +358,7 @@ class LimoSim extends SnoSim {
         stop: () => { this.beh.slam = false; } },
     });
   }
-  startProc(key, o = {}) {
-    const d = this.procDefs()[key]; if (!d) return;
-    if (this.procs[key]) this.stopProc(key);
-    const rec = this.procs[key] = { key, R: this.remapper(o.remaps), remaps: o.remaps || [], un: [], T: o.T || null };
-    if (o.T) this.procTerm[d.node] = o.T; else delete this.procTerm[d.node];
-    const given = o.params || {};
-    this.node(d.node, d.kind, d.params().map(([k, v, t, range, ro]) => [k, k in given ? given[k] : v, t, range, ro]));
-    d.start(rec);
-    if (SnoUI.cur === this) SnoUI.refreshTab('control');
-  }
-  stopProc(key) {
-    const d = this.procDefs()[key], rec = this.procs[key]; if (!d || !rec) return;
-    rec.un.forEach(f => { try { f(); } catch (e) { /* already gone */ } });
-    delete this.procs[key]; delete this.procTerm[d.node];
-    if (d.stop) d.stop(rec);
-    this.bus.removeNode(d.node);
-    if (SnoUI.cur === this) SnoUI.refreshTab('control');
-  }
   /* ---------- TF: frames exist only while someone publishes them ---------- */
-  noteStatic(node, list) {
-    let m = this.tfStatic.get(node); if (!m) this.tfStatic.set(node, m = new Map());
-    list.forEach(t => { const tr = t.transform || {}, p = tr.translation || {}, q = tr.rotation || {}; m.set(t.child_frame_id, { parent: (t.header || {}).frame_id, T: tfMat(+p.x || 0, +p.y || 0, +p.z || 0, q) }); });
-  }
-  staticOf(f) { let hit = null; this.tfStatic.forEach(m => { if (m.has(f)) hit = m.get(f); }); return hit; }
   // pose of a frame in odom, following the published tree; null when the chain is broken
   poseOf(f, d = 0) {
     if (!f || d > 16) return null;
@@ -401,7 +371,6 @@ class LimoSim extends SnoSim {
     if (this.kin.T[f] && !this._sk.has(f) && this.procs.rsp) { const R0 = this.poseOf(root, d + 1); return R0 ? K3.mul(R0, K3.mul(K3.inv(this.kin.T[root]), this.kin.T[f])) : null; }
     return null;
   }
-  warnEvery(key, sec, node, text) { const t = (this.warnT = this.warnT || {}); if (t[key] != null && this.t - t[key] < sec) return; t[key] = this.t; this.log(node, 'WARN', text); }
   setupExtra() { }
   onParam(node, k, v) {
     if (node === '/limo_base' && k === 'motion_mode') { const m = String(v).toLowerCase(), ok = LIMO_MODES.some(x => x[0] === m) || m === 'mcnamu'; if (!ok) return { ok: false, reason: 'motion_mode must be diff, ackermann, tracked or mecanum' }; this.setMode(m === 'mcnamu' ? 'mecanum' : m, true); this.event('param', { node, k, v: m }); return { ok: true }; }
@@ -473,25 +442,6 @@ class LimoSim extends SnoSim {
     if (this.fix) SnoFix.tick(this, dt);
   }
   /* ---------- the camera: camera_info on the sim clock, images rendered by the 3D view when one is due ---------- */
-  camInfo(hd) {
-    const C = LIMO_CAM, f = +((C.h / 2) / Math.tan(C.vfov * Math.PI / 360)).toFixed(4), cx = (C.w - 1) / 2, cy = (C.h - 1) / 2;
-    return { header: hd, height: C.h, width: C.w, distortion_model: 'plumb_bob', d: [0, 0, 0, 0, 0], k: [f, 0, cx, 0, f, cy, 0, 0, 1], r: [1, 0, 0, 0, 1, 0, 0, 0, 1], p: [f, 0, cx, 0, 0, f, cy, 0, 0, 0, 1, 0], binning_x: 0, binning_y: 0, roi: { x_offset: 0, y_offset: 0, height: 0, width: 0, do_rectify: false } };
-  }
-  camTick() {
-    if (!this.procs.camera || !this.tn.info || this.P('/camera/camera', 'enable_color') === false) return;
-    const fps = clampN(+this.P('/camera/camera', 'color_fps') || 10, 1, 30);
-    if (this.camLast != null && this.t >= this.camLast && this.t - this.camLast < 1 / fps - 1e-6) return;
-    this.camLast = this.t;
-    const hd = { stamp: stampNow(), frame_id: 'camera_color_optical_frame' };
-    this.pub('/camera/camera', this.tn.info, 'sensor_msgs/msg/CameraInfo', this.camInfo(hd));
-    this.camDue = hd;
-  }
-  cameraFrame(view) {
-    const hd = this.camDue; if (!hd) return; this.camDue = null;
-    const T = this.tn.img && this.bus.topics.get(this.tn.img); if (!T || !T.subs.size || !this.camCap) return;
-    const data = view.capture(this.camCap); if (!data) return;
-    this.pub('/camera/camera', this.tn.img, 'sensor_msgs/msg/Image', { header: hd, height: LIMO_CAM.h, width: LIMO_CAM.w, encoding: 'rgb8', is_bigendian: 0, step: LIMO_CAM.w * 3, data });
-  }
   baseCtl(h) {
     const D = LIMO_DIM, up = !!this.procs.base, live = up && this.cmdLive(this.P0('cmd_timeout')), vmax = up ? this.P0('max_linear_speed') : 0, wmax0 = up ? this.P0('max_angular_speed') : 0, m = this.mode;
     const tvx = live ? clampN(this.cmd.vx, -vmax, vmax) : 0, tvy = live && m === 'mecanum' ? clampN(this.cmd.vy, -vmax * 0.7, vmax * 0.7) : 0, wmax = m === 'tracked' ? Math.min(wmax0, 1.8) : wmax0, twz = live ? clampN(this.cmd.wz, -wmax, wmax) : 0;

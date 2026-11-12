@@ -424,7 +424,7 @@ class SnoSim {
     this.def = def; this.id = def.id; this.bus = makeBus(); this.started = false; this.t = 0; this.tab = def.tabs[0][0];
     this.pyLines = []; this.errLine = 0; this.rates = {}; this.selTopic = null; this.topicView = 'list';
     this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' };
-    this.procs = {}; this.procTerm = {}; this.logs = []; this.fix = null;
+    this.procs = {}; this.procTerm = {}; this.logs = []; this.fix = null; this.tn = {}; this.tfStatic = new Map();
     // DDS discovery warns once on each side when a publisher and a subscription cannot agree on QoS
     this.bus.onClash = (pub, sub, topic, policy) => {
       const vis = (n) => { const nd = this.bus.nodes.get(n); return nd && !nd.hidden; };
@@ -557,9 +557,85 @@ class SnoSim {
   }
   runExe(T) { T.print('This executable is not simulated here.', 'w'); }
   /* ---------- the robot's own nodes, as processes you can stop and start again (ros2 run … --ros-args …) ---------- */
+  // procDefs: key -> { pkg, exe, node, kind, params() (the node's own defaults), launch() (what the robot's launch file
+  // sets on top), check(k, v), crash (its last words when it dies at start-up), start(rec), stop(rec) }
   procDefs() { return {}; }
-  startProc() { }
-  stopProc() { }
+  startProc(key, o = {}) {
+    const d = this.procDefs()[key]; if (!d) return;
+    if (this.procs[key]) this.stopProc(key);
+    const rec = this.procs[key] = { key, R: this.remapper(o.remaps), remaps: o.remaps || [], un: [], T: o.T || null };
+    if (o.T) this.procTerm[d.node] = o.T; else delete this.procTerm[d.node];
+    const given = o.params || {};
+    this.node(d.node, d.kind, d.params().map(([k, v, t, range, ro]) => [k, k in given ? given[k] : v, t, range, ro]));
+    d.start(rec);
+    if (SnoUI.cur === this) SnoUI.refreshTab('control');
+  }
+  stopProc(key) {
+    const d = this.procDefs()[key], rec = this.procs[key]; if (!d || !rec) return;
+    rec.un.forEach(f => { try { f(); } catch (e) { /* already gone */ } });
+    delete this.procs[key]; delete this.procTerm[d.node];
+    if (d.stop) d.stop(rec);
+    this.bus.removeNode(d.node);
+    if (SnoUI.cur === this) SnoUI.refreshTab('control');
+  }
+  // the robot's launch file: its log header, then each process in order. cfg.<key> = false leaves a node out,
+  // an object starts it with { params, remaps } on top of the launch file's values, cfg.died names one that crashes
+  launchProcs(keys, cfg = {}) {
+    const B = this.bus, D = this.procDefs(), d0 = new Date(), p2 = (v) => String(v).padStart(2, '0');
+    const day = `${d0.getFullYear()}-${p2(d0.getMonth() + 1)}-${p2(d0.getDate())}-${p2(d0.getHours())}-${p2(d0.getMinutes())}-${p2(d0.getSeconds())}`;
+    keys = keys.filter(k => cfg[k] !== false || cfg.died === k);
+    this.launchLabel = {};
+    this.log('launch', 'INFO', `All log files can be found below /home/learner/.ros/log/${day}-${this.id}-sim-${B.pid}`, true);
+    this.log('launch', 'INFO', 'Default logging verbosity is set to INFO', true);
+    const run = keys.map((k, i) => { const d = D[k], label = `${d.exe}-${i + 1}`, pid = ++B.pid; this.launchLabel[d.node] = label; this.log(label, 'INFO', `process started with pid [${pid}]`, true); return [k, d, label, pid]; });
+    run.forEach(([k, d, label, pid]) => {
+      if (cfg[k] !== false) { const c = cfg[k] && typeof cfg[k] === 'object' ? cfg[k] : {}; this.startProc(k, { remaps: c.remaps, params: Object.assign({}, d.launch ? d.launch() : {}, c.params || {}) }); return; }
+      if (d.crash) this.log(label, 'ERROR', d.crash, 'out');
+      this.log(label, 'ERROR', `process has died [pid ${pid}, exit code 1, cmd '/opt/ros/jazzy/lib/${d.pkg}/${d.exe} --ros-args -r __node:=${d.node.slice(1)} --params-file /tmp/launch_params_${Math.random().toString(36).slice(2, 10)}'].`, true);
+    });
+  }
+  /* ---------- TF: frames exist only while someone publishes them ---------- */
+  noteStatic(node, list) {
+    let m = this.tfStatic.get(node); if (!m) this.tfStatic.set(node, m = new Map());
+    list.forEach(t => { const tr = t.transform || {}, p = tr.translation || {}, q = tr.rotation || {}; m.set(t.child_frame_id, { parent: (t.header || {}).frame_id, T: tfMat(+p.x || 0, +p.y || 0, +p.z || 0, q) }); });
+  }
+  staticOf(f) { let hit = null; this.tfStatic.forEach(m => { if (m.has(f)) hit = m.get(f); }); return hit; }
+  warnEvery(key, sec, node, text) { const t = (this.warnT = this.warnT || {}); if (t[key] != null && this.t - t[key] < sec) return; t[key] = this.t; this.log(node, 'WARN', text); }
+  /* ---------- a camera driver: camera_info on the frame clock, images rendered only when someone wants pixels ---------- */
+  // camCfg: { key (its proc), node, w, h, f (focal length, px), fps(), on(), frame(), internal (the robot's own
+  // vision nodes: they subscribe like any node but need no pixels, so they don't make the camera render) }.
+  // The driver's start() sets this.tn.img and this.tn.info (after remapping).
+  camInfo(hd) {
+    const C = this.camCfg, f = C.f, cx = (C.w - 1) / 2, cy = (C.h - 1) / 2;
+    return { header: hd, height: C.h, width: C.w, distortion_model: 'plumb_bob', d: [0, 0, 0, 0, 0], k: [f, 0, cx, 0, f, cy, 0, 0, 1], r: [1, 0, 0, 0, 1, 0, 0, 0, 1], p: [f, 0, cx, 0, 0, f, cy, 0, 0, 0, 1, 0], binning_x: 0, binning_y: 0, roi: { x_offset: 0, y_offset: 0, height: 0, width: 0, do_rectify: false } };
+  }
+  camTick() {
+    const C = this.camCfg; if (!C || !this.procs[C.key] || !this.tn || !this.tn.info || !C.on()) return;
+    const fps = clampN(+C.fps() || 10, 1, 30);
+    if (this.camLast != null && this.t >= this.camLast && this.t - this.camLast < 1 / fps - 1e-6) return;
+    this.camLast = this.t;
+    const hd = { stamp: stampNow(), frame_id: C.frame() };
+    this.pub(C.node, this.tn.info, 'sensor_msgs/msg/CameraInfo', this.camInfo(hd));
+    this.camDue = hd;
+    this.onCamFrame(hd);
+  }
+  onCamFrame() { }
+  camRunning() { return !!(this.camCfg && this.procs[this.camCfg.key]); }
+  cameraFrame(view) {
+    const hd = this.camDue; if (!hd) return; this.camDue = null;
+    const C = this.camCfg, T = this.tn.img && this.bus.topics.get(this.tn.img);
+    if (!T || !this.camCap || ![...T.subs.keys()].some(n => !(C.internal && C.internal.has(n)))) return;
+    const data = view.capture(this.camCap); if (!data) return;
+    this.pub(C.node, this.tn.img, 'sensor_msgs/msg/Image', { header: hd, height: C.h, width: C.w, encoding: 'rgb8', is_bigendian: 0, step: C.w * 3, data });
+  }
+  // would this frame reach that subscriber? Same topic name and type, and QoS they can agree on (else DDS warns once)
+  camFeeds(node) {
+    const C = this.camCfg, B = this.bus, topic = this.tn && this.tn.img, IMG = 'sensor_msgs/msg/Image';
+    if (!C || !topic || !this.procs[C.key]) return false;
+    const T = B.topics.get(topic); if (!T || T.pubs.get(C.node) !== IMG || T.subs.get(node) !== IMG) return false;
+    const bad = qosClash(T.pubQos.get(C.node), T.subQos.get(node)); if (bad) { B.clash(C.node, node, topic, bad); return false; }
+    return true;
+  }
   // values from -p name:=value are typed like YAML; a double parameter refuses an integer, as rclcpp does
   procParams(key, given) {
     const d = this.procDefs()[key], out = {}, errs = [];

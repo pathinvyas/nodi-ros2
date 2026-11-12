@@ -44,7 +44,7 @@ const SnoVision = {
     const V = sim.vis, el = SnoUI.root && $('.vis-info', SnoUI.root); if (!V || !el) return;
     const now = performance.now(), dt = (now - V.t0) / 1000; if (dt >= 1) { V.hz = V.n / dt; V.n = 0; V.t0 = now; }
     const m = V.last;
-    el.textContent = m ? `${V.hz.toFixed(1)} Hz · ${m.width}×${m.height} · ${m.encoding}` : sim.procs && !sim.procs.camera ? 'the camera driver is not running' : !SnoUI.view || !SnoUI.view.ready ? 'no images: the 3D view is off in this browser' : 'waiting for images…';
+    el.textContent = m ? `${V.hz.toFixed(1)} Hz · ${m.width}×${m.height} · ${m.encoding}` : sim.camCfg && !sim.camRunning() ? 'the camera driver is not running' : !SnoUI.view || !SnoUI.view.ready ? 'no images: the 3D view is off in this browser' : 'waiting for images…';
     const sel = $('#vis-topic', SnoUI.root); if (sel && sel.options.length !== this.topics(sim).length) this.fillTopics(sim, sel);
   },
   fillTopics(sim, sel) {

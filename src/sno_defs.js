@@ -19,9 +19,9 @@ function humanoidExe(sim, T, pkg, exe) {
 const SNO_DEFS = {
   ainex: {
     id: 'ainex', name: 'AiNex', maker: 'Hiwonder', catLabel: 'Humanoid', color: '#E5532B', hz: 60, cams: true,
-    blurb: 'A 41.5 cm, 24-joint ROS humanoid with a camera head. Walk it, pose it, record action groups, track colours and kick a ball.',
-    chipsHub: ['24 DOF', '41.5 cm', 'head camera'], tabs: HU_TABS, kbd: HU_KBD, keysHint: 'W A S D walk, Q E side-step.', teleop: [0.1, 0.6],
-    mainNodes: ['/ainex_controller', '/color_detector'],
+    blurb: 'A 41.5 cm, 24-joint ROS humanoid with a camera head. Walk it, pose it, record action groups, kick a ball, fix broken robots and write OpenCV nodes for its camera.',
+    chipsHub: ['24 DOF', 'head camera + OpenCV', 'fix-it tickets'], tabs: [...HU_TABS.slice(0, -1), ['fix', 'bug', 'Fix it'], ['vision', 'camera', 'Vision'], HU_TABS[HU_TABS.length - 1]], kbd: HU_KBD, keysHint: 'W A S D walk, Q E side-step.', teleop: [0.1, 0.6],
+    mainNodes: ['/ainex_controller', '/robot_state_publisher', '/usb_cam', '/color_detector', '/ball_locator'],
     make: (d) => new AinexSim(d),
     view: { dist: 1.15, az: -2.45, el: 0.4, target: [-0.35, 0, 0.16], minDist: 0.3, maxDist: 5, shadow: 1.7, grid: null, fog: [5, 14] },
     hu: {
@@ -35,17 +35,18 @@ const SNO_DEFS = {
       params: [['max_linear_speed', 0.15, 'double', [0.02, 0.21]], ['max_angular_speed', 0.8, 'double', [0.1, 1.2]], ['cmd_timeout', 0.8, 'double', [0.1, 5]], ['step_height', 0.025, 'double', [0.008, 0.045]], ['step_period', 0.42, 'double', [0.3, 0.8]], ['body_height', 0.222, 'double', [0.195, 0.232]], ['arm_swing', true, 'bool'], ['balance', true, 'bool']],
       actionTopic: '/action_group', stateTopic: '/walking/state', standSrv: '/stand_up',
       gait: { stepH: 0.025, maxV: 0.21, maxVy: 0.06, maxW: 0.9, arm: 0.28 },
-      camZ: 0.15, camLabel: 'head camera · 120° wide', camVfov: 80, hfov: 110 * Math.PI / 180,
+      camZ: 0.15, camLabel: 'head camera · 120° wide', camVfov: AINEX_CAM.vfov, hfov: AINEX_CAM.hfov,
       groups: [['Head', ['pan', 'tilt']], ['Left arm', ['L.sp', 'L.sr', 'L.ep', 'L.ey', 'L.gr']], ['Right arm', ['R.sp', 'R.sr', 'R.ep', 'R.ey', 'R.gr']], ['Left leg', ['L.hy', 'L.hr', 'L.hp', 'L.kn', 'L.ap', 'L.ar']], ['Right leg', ['R.hy', 'R.hr', 'R.hp', 'R.kn', 'R.ap', 'R.ar']]],
       objs: [{ kind: 'ball', x: 0.3, y: 0.06, z: 0.035, r: 0.035 }, { kind: 'block', color: 'red', x: 0.85, y: 0.42, z: 0.025, r: 0.03, size: 0.05 }, { kind: 'block', color: 'green', x: 0.55, y: -0.6, z: 0.025, r: 0.03, size: 0.05 }, { kind: 'block', color: 'blue', x: -0.6, y: 0.55, z: 0.025, r: 0.03, size: 0.05 }],
     },
     pkgs: { ainex_demos: ['wave', 'bow', 'squat', 'raise_arms', 'left_kick', 'right_kick', 'nod', 'shake', 'color_tracking.launch.py', 'color_reaction.launch.py'] },
-    chips: ['ros2 node list', 'ros2 topic echo /walking/state', 'ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.1}}"', 'ros2 topic pub --once /action_group std_msgs/msg/String "{data: wave}"', 'ros2 topic pub --once /joint_commands sensor_msgs/msg/JointState "{name: [head_pan], position: [0.8]}"', 'ros2 topic echo /color_detection', 'ros2 param set /color_detector target_color any', 'ros2 launch ainex_demos color_tracking.launch.py', 'ros2 run tf2_ros tf2_echo base_link camera_link'],
+    chips: ['ros2 node list', 'ros2 topic echo /walking/state', 'ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.1}}"', 'ros2 topic pub --once /action_group std_msgs/msg/String "{data: wave}"', 'ros2 topic pub --once /joint_commands sensor_msgs/msg/JointState "{name: [head_pan], position: [0.8]}"', 'ros2 topic echo /color_detection', 'ros2 param set /color_detector target_color any', 'ros2 launch ainex_demos color_tracking.launch.py', 'ros2 topic hz /image_raw', 'ros2 topic echo /ball_position', 'ros2 run tf2_ros tf2_echo base_link camera_optical_frame'],
     help: `AiNex simulator terminal (ROS 2 Jazzy).
   ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.1, y: 0.0}, angular: {z: 0.3}}"
   ros2 topic pub --once /action_group std_msgs/msg/String "{data: wave}"     (bow, squat, left_kick, nod, …)
   ros2 topic pub --once /joint_commands sensor_msgs/msg/JointState "{name: [r_sho_pitch], position: [-2.5]}"
-  ros2 topic echo /joint_states | /imu --once | /color_detection | /walking/state
+  ros2 topic echo /joint_states | /imu --once | /color_detection | /ball_position | /walking/state
+  ros2 topic hz /image_raw      ros2 topic echo /camera_info --once      ros2 run usb_cam usb_cam_node_exe
   ros2 param set /ainex_controller step_height 0.035      ros2 param set /color_detector target_color blue
   ros2 service call /stand_up std_srvs/srv/Trigger        ros2 service call /sim/push std_srvs/srv/Trigger
   ros2 launch ainex_demos color_tracking.launch.py        ros2 run ainex_demos left_kick
@@ -62,11 +63,17 @@ Keys: Up/Down history · Tab completes · Ctrl+C stops · Ctrl+L clears`,
       { id: 'm8', title: 'Terminal walker', text: 'Walk 0.5 m using only `ros2 topic pub` on /cmd_vel.', tab: 'term', xp: 20 },
       { id: 'm9', title: 'Back on your feet', text: 'Knock AiNex over (Big push, or turn balance off first), then press **Stand up**: the hoist sets it back on its feet.', tab: 'control', xp: 20 },
       { id: 'm10', title: 'Code it', text: 'Run a Python node that publishes /joint_commands or /cmd_vel. The wave template is a good start.', tab: 'code', xp: 30 },
+      { id: 'v1', title: 'Camera check', text: 'In the Terminal, measure the head camera\'s frame rate with `ros2 topic hz /image_raw`, then read its intrinsics once: `ros2 topic echo /camera_info --once`.', tab: 'term', xp: 15, vision: true },
+      { id: 'v2', title: 'Watch the ball', text: 'Run the **Ball tracker (head)** and walk AiNex around with W A S D: your node must keep the orange ball in the middle of the picture for 5 s of walking, by turning the head.', tab: 'vision', xp: 30, vision: true, tpl: 'ball_head' },
+      { id: 'v3', title: 'Walk to the ball', text: 'Run **Walk to the ball**: your node must walk AiNex up to the orange ball and stop with it 10 to 25 cm in front, roughly centred.', tab: 'vision', xp: 35, vision: true, tpl: 'ball_walk' },
+      { id: 'v4', title: 'Tag reader', text: 'Run the **Tag reader** and walk AiNex around the pitch: your node must publish the IDs of 3 different ArUco tags on `/marker_id`.', tab: 'vision', xp: 30, vision: true, tpl: 'aruco' },
+      { id: 'v5', title: 'Vision striker', text: 'Score a goal from a kick your node asks for: walk to the ball, line up with the goal (tag 0 sits above it), then publish `left_kick` or `right_kick` on `/action_group`.', tab: 'vision', xp: 50, vision: true, tpl: 'ball_walk' },
     ],
+    visionNote: 'AiNex\'s head camera (`/usb_cam`) publishes `/image_raw` (320 × 240 `rgb8`, 15 Hz, a 120° wide view) and `/camera_info`. Aim it with `/joint_commands` (`head_pan`, `head_tilt`). Write OpenCV nodes in the **Code** tab: `cv_bridge` converts images to numpy arrays, and `cv2.imshow()` windows appear over the 3D view. On the pitch: the orange ball, three coloured blocks, and ArUco tags (`DICT_4X4_50`, 15 cm) on posts, plus a 20 cm tag 0 above the goal.',
     specs: [['Maker', 'Hiwonder'], ['Type', 'Small ROS humanoid'], ['Size', '193 × 135 × 415 mm'], ['Joints', '24 (legs 12, arms + grippers 10, head 2)'], ['Actuators', 'Serial bus servos'], ['Controller', 'Raspberry Pi 4B / 5'], ['Camera', '120° wide-angle, 2-DOF head'], ['IMU', '3-axis gyro, accelerometer, compass'], ['Walking', 'Inverse-kinematics gait'], ['Software', 'ROS, Gazebo, action-group editor']],
-    ifaces: [['/cmd_vel', 'subscribe', 'geometry_msgs/msg/Twist', 'Walking velocity: `linear.x` forward, `linear.y` sideways, `angular.z` turn'], ['/joint_commands', 'subscribe', 'sensor_msgs/msg/JointState', 'Joint targets by name (radians). Leg joints switch to servo mode'], ['/action_group', 'subscribe', 'std_msgs/msg/String', 'wave, bow, squat, raise_arms, left_kick, right_kick, nod, shake, grab, or your saved actions'], ['/joint_states', 'publish', 'sensor_msgs/msg/JointState', 'All 24 joints, 25 Hz'], ['/imu', 'publish', 'sensor_msgs/msg/Imu', 'Orientation, rates, acceleration, 50 Hz'], ['/odom', 'publish', 'nav_msgs/msg/Odometry', 'Walking odometry, 20 Hz'], ['/walking/state', 'publish', 'std_msgs/msg/String', 'standing, walking, action:&lt;name&gt;, fallen, getting_up'], ['/color_detection', 'publish', 'snobots_msgs/msg/ColorDetection', 'Largest `target_color` blob in the head camera, 15 Hz'], ['/stand_up', 'service', 'std_srvs/srv/Trigger', 'Get up after a fall'], ['/sim/push', 'service', 'std_srvs/srv/Trigger', 'Simulator only: push the robot'], ['/reset_world', 'service', 'std_srvs/srv/Empty', 'Reset the robot, ball and blocks'], ['/ainex_controller', 'parameters', 'double / bool', '`step_height`, `step_period`, `body_height`, `max_linear_speed`, `arm_swing`, `balance`'], ['/color_detector', 'parameters', 'string / double', '`target_color` (red, green, blue, any), `min_area`']],
+    ifaces: [['/cmd_vel', 'subscribe', 'geometry_msgs/msg/Twist', 'Walking velocity: `linear.x` forward, `linear.y` sideways, `angular.z` turn'], ['/joint_commands', 'subscribe', 'sensor_msgs/msg/JointState', 'Joint targets by name (radians). Leg joints switch to servo mode'], ['/action_group', 'subscribe', 'std_msgs/msg/String', 'wave, bow, squat, raise_arms, left_kick, right_kick, nod, shake, grab, or your saved actions'], ['/joint_states', 'publish', 'sensor_msgs/msg/JointState', 'All 24 joints, 25 Hz'], ['/imu', 'publish', 'sensor_msgs/msg/Imu', 'Orientation, rates, acceleration, 50 Hz'], ['/odom', 'publish', 'nav_msgs/msg/Odometry', 'Walking odometry, 20 Hz'], ['/walking/state', 'publish', 'std_msgs/msg/String', 'standing, walking, action:&lt;name&gt;, fallen, getting_up'], ['/image_raw', 'publish', 'sensor_msgs/msg/Image', 'Head camera (`/usb_cam`): 320 × 240 `rgb8`, 15 Hz, rendered while something subscribes'], ['/camera_info', 'publish', 'sensor_msgs/msg/CameraInfo', 'Pinhole intrinsics `K` (no distortion), frame `camera_optical_frame`'], ['/color_detection', 'publish', 'snobots_msgs/msg/ColorDetection', 'Largest `target_color` blob, one message per camera frame'], ['/ball_position', 'publish', 'geometry_msgs/msg/PointStamped', 'The orange ball on the floor, in `base_link`, while it is in view (`/ball_locator`, uses TF)'], ['/stand_up', 'service', 'std_srvs/srv/Trigger', 'Get up after a fall'], ['/sim/push', 'service', 'std_srvs/srv/Trigger', 'Simulator only: push the robot'], ['/reset_world', 'service', 'std_srvs/srv/Empty', 'Reset the robot, ball and blocks'], ['/ainex_controller', 'parameters', 'double / bool', '`step_height`, `step_period`, `body_height`, `max_linear_speed`, `arm_swing`, `balance`'], ['/color_detector', 'parameters', 'string / double', '`target_color` (red, green, blue, any), `min_area`'], ['/usb_cam', 'parameters', 'string / double', '`frame_id`, `framerate`, `camera_name`, … (read once at start-up)'], ['/ball_locator', 'parameters', 'double / string', '`ball_radius`, `target_frame`']],
     jointDoc: 'Joint names: `l_`/`r_` + `hip_yaw, hip_roll, hip_pitch, knee, ank_pitch, ank_roll` (legs), `sho_pitch, sho_roll, el_pitch, el_yaw, gripper` (arms), plus `head_pan, head_tilt`. Angles are radians and follow the right-hand rule: pitch joints turn about +y (negative swings an arm forward and up), roll about +x, yaw about +z. Knees bend positive, elbows bend negative.',
-    realism: 'Physics comes from the simulator\'s own rigid-body engine, built in the style of MuJoCo but not MuJoCo itself. Every link has mass and inertia, every servo is a torque-limited motor, and the feet touch the ground through contacts with friction, so a bad step can really tip the robot over. The walk is model-based: footsteps from `/cmd_vel`, a centre-of-mass plan from the linear inverted pendulum, and leg inverse kinematics solved every control tick. That is close in spirit to the real robot\'s inverse-kinematics gait, but the real walking engine has its own parameters, and real bus servos have backlash and gear play that are not modelled here. After a fall, a virtual hoist (like a lab gantry) lifts the robot back onto its feet. Topic names follow plain ROS 2 conventions and are simplified; the real kit ships its own packages, launch files and action-group editor.',
+    realism: 'Physics comes from the simulator\'s own rigid-body engine, built in the style of MuJoCo but not MuJoCo itself. Every link has mass and inertia, every servo is a torque-limited motor, and the feet touch the ground through contacts with friction, so a bad step can really tip the robot over. The walk is model-based: footsteps from `/cmd_vel`, a centre-of-mass plan from the linear inverted pendulum, and leg inverse kinematics solved every control tick. That is close in spirit to the real robot\'s inverse-kinematics gait, but the real walking engine has its own parameters, and real bus servos have backlash and gear play that are not modelled here. After a fall, a virtual hoist (like a lab gantry) lifts the robot back onto its feet. The head camera is rendered from the head\'s pose in the 3D view: 320 × 240 through a 120° (diagonal) lens, modelled as an ideal pinhole, so it has none of the barrel distortion a real wide-angle lens has. Topic names follow plain ROS 2 conventions and are simplified; the real kit ships its own packages, launch files and action-group editor.',
     pyHint: 'Pick a template, press Run (or Ctrl+Enter) and watch AiNex. Your node really publishes on the graph: check the Topics tab while it runs.',
     py: {
       wave: { label: 'Wave the right arm (/joint_commands)', code: PY_HEAD + `from sensor_msgs.msg import JointState
@@ -147,6 +154,178 @@ class FollowRed(Node):
                 self.get_logger().info('reached the red block!')
         self.pub.publish(cmd)
 ` + PY_MAIN('FollowRed') },
+      cam: { label: 'Camera viewer (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
+
+
+class CameraViewer(Node):
+    """Show what AiNex's head camera sees, and the edges OpenCV finds in it."""
+
+    def __init__(self):
+        super().__init__('camera_viewer')
+        self.bridge = CvBridge()
+        self.create_subscription(Image, '/image_raw', self.on_image, 10)
+        self.frames = 0
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')   # OpenCV images are BGR
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 60, 150)
+        self.frames += 1
+        if self.frames % 30 == 1:
+            h, w = frame.shape[:2]
+            b, g, r = frame[h // 2, w // 2]
+            self.get_logger().info(f'{w}x{h} image, centre pixel BGR ({b}, {g}, {r}), mean brightness {gray.mean():.0f}')
+        cv2.imshow('camera', frame)   # windows appear over the 3D view
+        cv2.imshow('edges', edges)
+        cv2.waitKey(1)
+` + PY_MAIN('CameraViewer') },
+      ball_head: { label: 'Ball tracker: head (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image, JointState
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+ORANGE_LO = np.array([5, 120, 100])    # OpenCV HSV: H 0-179, S and V 0-255
+ORANGE_HI = np.array([22, 255, 255])
+KP = 0.4                               # radians of head turn per unit of image error
+MAX_TILT = 0.85                        # look further down and the camera sees AiNex's own orange chest
+
+
+class BallWatcher(Node):
+    """Keep the orange ball in the middle of the picture by turning the head."""
+
+    def __init__(self):
+        super().__init__('ball_watcher')
+        self.bridge = CvBridge()
+        self.pan, self.tilt = 0.0, 0.32      # the head's angles, kept up to date from /joint_states
+        self.pub = self.create_publisher(JointState, '/joint_commands', 10)
+        self.create_subscription(JointState, '/joint_states', self.on_joints, 10)
+        self.create_subscription(Image, '/image_raw', self.on_image, 10)
+
+    def on_joints(self, msg):
+        for name, pos in zip(msg.name, msg.position):
+            if name == 'head_pan':
+                self.pan = pos
+            elif name == 'head_tilt':
+                self.tilt = pos
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = frame.shape[:2]
+        mask = cv2.inRange(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV), ORANGE_LO, ORANGE_HI)
+        m = cv2.moments(mask)
+        if m['m00'] > 30 * 255:                    # at least about 30 orange pixels
+            cx, cy = m['m10'] / m['m00'], m['m01'] / m['m00']
+            ex = (cx - w / 2) / (w / 2)            # -1 (left edge) .. +1 (right edge)
+            ey = (cy - h / 2) / (h / 2)            # -1 (top) .. +1 (bottom)
+            cmd = JointState()
+            cmd.name = ['head_pan', 'head_tilt']
+            cmd.position = [self.pan - KP * ex,                    # head_pan turns left when positive
+                            min(self.tilt + KP * ey, MAX_TILT)]    # head_tilt looks down when positive
+            self.pub.publish(cmd)
+            cv2.circle(frame, (int(cx), int(cy)), 10, (0, 255, 0), 2)
+        cv2.imshow('ball', frame)
+        cv2.imshow('mask', mask)
+        cv2.waitKey(1)
+` + PY_MAIN('BallWatcher') },
+      ball_walk: { label: 'Walk to the ball (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image, JointState
+from geometry_msgs.msg import Twist
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+ORANGE_LO = np.array([5, 120, 100])
+ORANGE_HI = np.array([22, 255, 255])
+HEAD_TILT = 0.75     # radians: look down at the floor in front of the feet
+AT_FEET = 0.7        # the ball's centre this far down the picture (0 top, 1 bottom): about 20 cm away, so stop
+
+
+class BallWalker(Node):
+    """Find the orange ball, turn to face it and walk up to it."""
+
+    def __init__(self):
+        super().__init__('ball_walker')
+        self.bridge = CvBridge()
+        self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.head = self.create_publisher(JointState, '/joint_commands', 10)
+        self.create_subscription(Image, '/image_raw', self.on_image, 10)
+        self.create_timer(1.0, self.look_down)
+
+    def look_down(self):
+        cmd = JointState()
+        cmd.name = ['head_pan', 'head_tilt']
+        cmd.position = [0.0, HEAD_TILT]
+        self.head.publish(cmd)
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = frame.shape[:2]
+        mask = cv2.inRange(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV), ORANGE_LO, ORANGE_HI)
+        m = cv2.moments(mask)
+        cmd = Twist()
+        if m['m00'] > 30 * 255:
+            cx, cy = m['m10'] / m['m00'], m['m01'] / m['m00']
+            ex = (cx - w / 2) / (w / 2)           # -1 (left) .. +1 (right)
+            if cy / h < AT_FEET:
+                cmd.angular.z = -0.8 * ex         # turn toward the ball
+                cmd.linear.x = 0.10 if abs(ex) < 0.3 else 0.0
+            else:                                 # arrived: an all-zero Twist makes AiNex stop and stand
+                self.get_logger().info('the ball is at my feet', throttle_duration_sec=2.0)
+            cv2.circle(frame, (int(cx), int(cy)), 10, (0, 255, 0), 2)
+        else:
+            cmd.angular.z = 0.4                   # nothing seen: turn on the spot and look around
+        self.pub.publish(cmd)
+        cv2.imshow('ball', frame)
+        cv2.waitKey(1)
+` + PY_MAIN('BallWalker') },
+      aruco: { label: 'Tag reader (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image, CameraInfo
+from std_msgs.msg import Int32
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+TAG_SIZE = 0.15   # metres: the side of the black square (tag 0 above the goal is 0.20)
+
+
+class TagReader(Node):
+    """Detect ArUco tags (DICT_4X4_50), publish their IDs and estimate where they are."""
+
+    def __init__(self):
+        super().__init__('tag_reader')
+        self.bridge = CvBridge()
+        self.K, self.D = None, None
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        params = cv2.aruco.DetectorParameters()
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX   # sub-pixel corners: much better poses
+        self.detector = cv2.aruco.ArucoDetector(dictionary, params)
+        self.pub = self.create_publisher(Int32, '/marker_id', 10)
+        self.create_subscription(CameraInfo, '/camera_info', self.on_info, 10)
+        self.create_subscription(Image, '/image_raw', self.on_image, 10)
+
+    def on_info(self, msg):
+        self.K = np.array(msg.k, dtype=np.float64).reshape(3, 3)   # fx, fy, cx, cy
+        self.D = np.array(msg.d, dtype=np.float64)
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        corners, ids, _ = self.detector.detectMarkers(frame)
+        if ids is not None:
+            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+            for c, i in zip(corners, ids.flatten()):
+                self.pub.publish(Int32(data=int(i)))
+                if self.K is None:
+                    continue
+                s = (0.20 if i == 0 else TAG_SIZE) / 2   # corners: top-left, top-right, bottom-right, bottom-left
+                square = np.array([[-s, s, 0], [s, s, 0], [s, -s, 0], [-s, -s, 0]], dtype=np.float32)
+                ok, rvec, tvec = cv2.solvePnP(square, c.reshape(4, 2), self.K, self.D, flags=cv2.SOLVEPNP_IPPE_SQUARE)
+                if ok:
+                    x, y, z = tvec.flatten()   # camera optical frame: x right, y down, z forward
+                    self.get_logger().info(f'tag {i}: {z:.2f} m ahead, {x:+.2f} m to the right',
+                                           throttle_duration_sec=1.0)
+        cv2.imshow('tags', frame)
+        cv2.waitKey(1)
+` + PY_MAIN('TagReader') },
     },
   },
   r1: {
