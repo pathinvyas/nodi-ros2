@@ -18,6 +18,20 @@ const LIBRARY = [
     tags: ['Locomotion', 'Kinematics', 'Perception', 'Localization', 'Navigation'],
     blurb: 'The classic course text on mobile robots, from wheels and legs through sensors, localization and mapping to planning and navigation, with problems at the end of every chapter.',
   },
+  {
+    id: 'rmc1', title: 'Robot Modeling and Control', sub: 'First edition', by: 'Mark W. Spong, Seth Hutchinson and M. Vidyasagar',
+    pub: 'John Wiley & Sons, 2006', own: true, pages: 491, color: '#4B2A7A', kicker: 'Textbook',
+    link: 'https://bcs.wiley.com/he-bcs/Books?action=index&bcsId=2983&itemId=0471649902',
+    tags: ['Kinematics', 'Jacobians', 'Dynamics', 'Control', 'Visual servoing'],
+    blurb: 'The standard course text on robot arms: rigid motions and homogeneous transforms, forward and inverse kinematics, the Jacobian, trajectory planning, dynamics, then joint, force, nonlinear and vision-based control, with worked examples and problems in every chapter.',
+  },
+  {
+    id: 'cirp1', title: 'A Concise Introduction to Robot Programming with ROS2', sub: 'First edition', by: 'Francisco Martín Rico',
+    pub: 'CRC Press, 2023', own: true, pages: 265, color: '#8A3A14', kicker: 'Textbook',
+    link: 'https://routledge.com/A-Concise-Introduction-to-Robot-Programming-with-ROS2/Rico/p/book/9781032264653',
+    tags: ['ROS 2', 'C++ and Python', 'State machines', 'TF', 'Behavior trees'],
+    blurb: 'A hands-on ROS 2 course built around a simulated mobile robot: workspaces, nodes, topics and launch files, a bump-and-go behavior as a state machine in C++ and Python, the TF system, obstacle avoidance and object tracking, then behavior trees for patrolling.',
+  },
 ];
 const PDFJS_BASE = window.LIB_PDFJS_BASE || 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
 const fmtSize = (b) => b >= 1048576 ? (b / 1048576).toFixed(b >= 10485760 ? 0 : 1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
