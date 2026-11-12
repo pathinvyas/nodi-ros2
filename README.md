@@ -120,6 +120,8 @@ To add a shipped book:
 
 The build inlines covers and copies the PDFs next to `index.html`. `npm test` checks that every listed file exists and is a PDF.
 
+To add a bring-your-own-copy book, add an entry with `own: true`, the publisher (`pub`), a `link` to the publisher's page and a cover `color`. The shelf draws its cover from those. Don't put the book's PDF anywhere in the repository; `npm test` fails if such an entry names a file.
+
 The reader uses [PDF.js](https://mozilla.github.io/pdf.js/), loaded from a CDN when you first open a book.
 
 ## Run it locally
@@ -191,6 +193,7 @@ docs/screenshots/   images for this README
 - The SnoBots simulators are unofficial educational simulators, made for learning. They are not affiliated with or endorsed by Hiwonder, Unitree, AgileX or Elephant Robotics. Robot names belong to their owners. Models are simplified and behaviour is approximate.
 - Third-party code loaded at runtime: [three.js](https://threejs.org) (MIT), [Pyodide](https://pyodide.org) (MPL-2.0), [PDF.js](https://mozilla.github.io/pdf.js/) (Apache-2.0), and fonts from Google Fonts (SIL Open Font License). When a Python node imports them, [OpenCV](https://opencv.org) (Apache-2.0) and [NumPy](https://numpy.org) (BSD-3-Clause) come from Pyodide's package repository.
 - *Patty's Guide to GitHub* in `library/` is by Pathin and is published with the app.
+- The textbooks on the shelf (*Introduction to Autonomous Mobile Robots*, *Robot Modeling and Control* and *A Concise Introduction to Robot Programming with ROS2*) are copyrighted by their authors and publishers. Nodi doesn't include them. It lists each one with a link to its publisher, and readers add their own copies.
 
 ## License
 
