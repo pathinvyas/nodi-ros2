@@ -2,7 +2,7 @@
 // Each ticket starts the robot with a real fault in its ROS graph: a crashed driver, a bad parameter, a leftover remap,
 // mismatched QoS, a missing transform, a wrong frame_id or the wrong message type. You find the cause and fix it from
 // the terminal with ros2 commands, the way you would on a real robot. A ticket's setup is the robot's start-up
-// configuration (see LimoSim.restoreRobot and AinexSim.restoreRobot); its check reads the live simulation, so any fix
+// configuration (see LimoSim.restoreRobot, AinexSim.restoreRobot and R1Sim.restoreRobot); its check reads the live simulation, so any fix
 // that works, counts.
 const FIX_TICKETS = {
   limo: [
@@ -149,6 +149,78 @@ const FIX_TICKETS = {
       debrief: "The joystick sent `geometry_msgs/msg/TwistStamped`, but the walking controller expects `geometry_msgs/msg/Twist`. A publisher and a subscription only connect when both the name and the type match, and nothing warns you when they don't. `ros2 topic pub` worked because you typed the type yourself. Jazzy made this mix-up common, since some packages now take TwistStamped velocity commands while others still take Twist.",
     },
   ],
+  r1: [
+    {
+      id: 'cam-down', title: "R1 doesn't see anyone", level: 1, xp: 40, skills: ['nodes', 'topics'], from: 'Mei',
+      report: "Follow me is switched on and the visitor is standing right in front of R1, but R1 just stares straight ahead. The Vision tab has no picture at all. It worked at yesterday's open day!",
+      goal: 'Get the head camera publishing again so the person locator gets images.',
+      setup: () => ({ cam: false, died: 'cam', follow: true, guest: 'stand' }),
+      check: (sim, st) => ({ items: [['`/head_camera/color/image_raw` has a publisher', fixPubs(sim, '/head_camera/color/image_raw') > 0], ['The person locator is getting images', st.locC >= 15]] }),
+      hints: ['Start where the data begins: `ros2 topic info /head_camera/color/image_raw`. Who publishes it?', 'Is the camera driver running? `ros2 node list`, then read the robot log in the Fix it tab: what happened to `head_camera_node`?', 'Start it again: `ros2 run r1_camera head_camera_node`. It keeps running in that terminal, so open a second terminal (+) for more commands.'],
+      fix: 'ros2 run r1_camera head_camera_node',
+      debrief: 'The camera driver died at start-up because it found no stereo camera on USB yet (a camera can take a moment to appear after boot), so nothing published colour or depth and the person locator simply waited. Check a sensor the same way every time: `ros2 node list` (is the driver running?), `ros2 topic info` (how many publishers?), and the launch output for the reason. A launch file can retry a crashed driver for you with `respawn=True`.',
+    },
+    {
+      id: 'mode', title: 'R1 ignores the joystick', level: 1, xp: 40, skills: ['services'], from: 'Ravi',
+      report: "I was the last one to use R1, for the PD lab in the gantry. Now it just hangs there and the joystick does nothing at all. I'm sure I didn't break anything!",
+      goal: 'Walk R1 half a metre with the joystick (Control tab or W A S D).',
+      setup: () => ({ lowlevel: true, joy: 'twist' }),
+      check: (sim, st) => { const m = sim.locoStateRaw(); return { items: [[`R1 is in a mode that walks (now: ${m})`, ['standing', 'walking', 'running', 'run_ready'].includes(m)], [`R1 walks from the joystick (${Math.min(st.joy, 0.5).toFixed(2)} of 0.5 m)`, st.joy >= 0.5]] }; },
+      hints: ['What state is the robot in? `ros2 topic echo /loco/state`, and read the controller\'s warning in the robot log.', 'Modes are changed with a service. List them with `ros2 service list`, and see what one takes: `ros2 interface show snobots_msgs/srv/SetMode`', 'Ask for walking mode: `ros2 service call /loco/set_mode snobots_msgs/srv/SetMode "{mode: walk}"`. The gantry sets R1 down on its feet.'],
+      fix: 'ros2 service call /loco/set_mode snobots_msgs/srv/SetMode "{mode: walk}"',
+      debrief: "R1 was still in low-level mode from the PD lab: its motors obeyed `/lowcmd` only, and the locomotion controller ignored `/cmd_vel` (the robot log said so). Robots like R1 run a state machine (damp, stand, walk, run, low-level), and many commands only work in some states. Check the state first (`/loco/state`), then change it with the service the robot offers. A service fits the job: you ask, and you get an answer back, here `success: true` and the new mode.",
+    },
+    {
+      id: 'fm-remap', title: 'Head yes, feet no', level: 2, xp: 60, skills: ['remapping', 'topics'], from: 'Kai',
+      report: "Since Alex's two-robot demo, follow me is half broken: R1 turns its head to look at the visitor, but it won't take a single step toward them. Driving with the joystick works fine.",
+      goal: 'Make follow me walk R1 over to the visitor.',
+      setup: () => ({ follow: { remap: '/r1_b/cmd_vel' }, guest: 'stand' }),
+      check: (sim, st) => ({ items: [['The person locator finds the visitor', st.loc >= 5], [`Follow me walks R1 toward the visitor (${Math.min(st.fm, 0.5).toFixed(2)} of 0.5 m)`, st.fm >= 0.5]] }),
+      hints: ['Who publishes `/cmd_vel`, and who listens? `ros2 topic info /cmd_vel --verbose`. Then look for other velocity topics: `ros2 topic list`', 'What does the follow-me node really publish? `ros2 node info /follow_me`', 'Bridge the two names: `ros2 run topic_tools relay /r1_b/cmd_vel /cmd_vel`. Or restart follow me without the leftover remap: switch it off and on again in the Control tab.'],
+      fix: 'ros2 run topic_tools relay /r1_b/cmd_vel /cmd_vel',
+      debrief: "The follow-me node had been started with a remap left over from a two-robot demo (`cmd_vel:=/r1_b/cmd_vel`), so its walking commands went to a robot that wasn't there, while its head commands on `/joint_commands` still reached R1. A node that half works is a strong clue: compare what it publishes (`ros2 node info`) with what the robot subscribes to. To run several robots, give each one its own namespace instead of renaming topics one at a time.",
+    },
+    {
+      id: 'look-away', title: 'R1 looks away from people', level: 2, xp: 60, skills: ['parameters', 'control'], from: 'Theo',
+      report: 'Follow me is on and the visitor is right there, but every time R1 notices them it turns its head away, as if it were shy. Someone changed a setting for the mirror-image demo at the expo.',
+      goal: 'R1 keeps its eyes on the visitor for 3 seconds in a row.',
+      setup: () => ({ follow: { head_kp: -0.6 }, guest: 'stand' }),
+      check: (sim, st) => ({ items: [['The person locator finds the visitor', st.loc >= 5], [`R1 looks at the visitor (${Math.min(st.head, 3).toFixed(1)} of 3 s in a row)`, st.head >= 3]] }),
+      hints: ['Watch the head in the 3D view, or `ros2 topic echo /joint_commands`: which way does each command turn it?', 'The follow-me node turns the head with a proportional controller. `ros2 param list /follow_me`, then `ros2 param get` its gain.', 'A gain with the wrong sign pushes away from the target. Flip it back: `ros2 param set /follow_me head_kp 0.6`'],
+      fix: 'ros2 param set /follow_me head_kp 0.6',
+      debrief: '`head_kp` was −0.6. A proportional controller turns by kp times the error, so a negative gain turned the head away from the visitor, harder the further off-centre they were. The visitor left the picture, the head drifted back, saw them and turned away again. Sign errors are among the most common control bugs (a mirrored image, a flipped axis, a motor wired backwards). Try a new control loop with a small gain first, and check that it moves the right way.',
+    },
+    {
+      id: 'depth-qos', title: 'Depth at 15 Hz, but nobody is found', level: 2, xp: 70, skills: ['QoS'], from: 'Jordan',
+      report: "`ros2 topic hz /head_camera/depth/image_raw` says depth runs at 15 Hz, and the colour images are fine too. But follow me never moves, and the person locator complains about missing depth. Someone changed the camera's settings yesterday to save Wi-Fi bandwidth.",
+      goal: 'Get the depth images to the person locator so it places the visitor.',
+      setup: () => ({ cam: { params: { 'qos_overrides./head_camera/depth/image_raw.publisher.reliability': 'best_effort' } }, follow: true, guest: 'stand' }),
+      check: (sim, st) => ({ items: [['The person locator places the visitor', st.locOk >= 10]] }),
+      hints: ["If a tool gets the data but a node doesn't, compare how they connect: `ros2 topic info /head_camera/depth/image_raw --verbose`", 'Compare Reliability for the publisher and the subscription, and read the warnings in the robot log. A RELIABLE subscription cannot take messages from a BEST_EFFORT publisher.', 'Restart the camera reliably: `ros2 run r1_camera head_camera_node --ros-args -p qos_overrides./head_camera/depth/image_raw.publisher.reliability:=reliable` (or restart the locator with `ros2 run r1_vision person_locator --ros-args -p qos_overrides./head_camera/depth/image_raw.subscription.reliability:=best_effort`).'],
+      fix: 'ros2 run r1_camera head_camera_node --ros-args -p qos_overrides./head_camera/depth/image_raw.publisher.reliability:=reliable',
+      debrief: 'The camera published depth as BEST_EFFORT, but the person locator asked for RELIABLE. A subscription only connects to a publisher that offers at least what it requests, so depth never reached the locator while colour (still RELIABLE) did: it saw pictures but could not place anyone in them. `ros2 topic hz` adapts its QoS to the publisher, which is why it worked. For camera streams best effort is often the right choice (a late frame is useless), so make every subscriber agree, for example with the sensor-data QoS profile.',
+    },
+    {
+      id: 'depth-scale', title: 'The visitor is a kilometre away', level: 3, xp: 90, skills: ['units', 'parameters'], from: 'Sam',
+      report: "We copied the person locator's settings from our other robot, whose camera sends depth as 32-bit floats in metres. Since then follow me ignores the visitor, and the log says they are over a thousand metres away. They're standing right there!",
+      goal: 'Make `/person_position` put the visitor where they really are.',
+      setup: () => ({ loc: { params: { depth_scale: 1.0 } }, follow: true, guest: 'stand' }),
+      check: (sim, st) => ({ items: [['`/person_position` is within 10 cm of the visitor', st.locOk >= 10]] }),
+      hints: ["What unit is R1's depth in? `ros2 topic echo /head_camera/depth/image_raw --once` and look at `encoding`. Or pick the depth topic in the Vision tab and click the visitor: compare the raw number with how far away they stand.", 'The locator multiplies each raw depth value by a scale to get metres: `ros2 param get /person_locator depth_scale`', '`16UC1` depth is whole millimetres, so the scale is 0.001: `ros2 param set /person_locator depth_scale 0.001`'],
+      fix: 'ros2 param set /person_locator depth_scale 0.001',
+      debrief: "R1's camera sends depth as `16UC1`, whole millimetres; the other robot's camera sends `32FC1`, metres as floats. ROS uses both (REP 118), and the image's `encoding` field says which one you have. With `depth_scale` 1.0, a visitor 2 m away read as 2000 m, far beyond `max_range`, so they were ignored. Check the encoding before you trust the numbers, and convert units in one place.",
+    },
+    {
+      id: 'optical', title: 'A frame went missing', level: 3, xp: 90, skills: ['TF'], from: 'Robin',
+      report: "We put last year's robot description back on R1. Since then the person locator only says that `camera_optical_frame` does not exist. Last year's description has `camera_link`, which looks forward along x. Images use the optical convention instead: z forward, x right, y down, from the same spot.",
+      goal: 'Publish `camera_link` → `camera_optical_frame` with the right rotation, so the person locator places the visitor.',
+      setup: () => ({ oldUrdf: true, follow: true, guest: 'stand' }),
+      check: (sim, st) => { const e = fixTfError(sim, 'camera_optical_frame', 'camera_optical_frame'); return { items: [['`camera_optical_frame` is in the TF tree', !!e], ['…at the camera, with z forward, x right and y down', !!e && e.ok], ['`/person_position` is within 10 cm of the visitor', st.locOk >= 10]], note: e && !e.ok ? fixOff(e, 'The frame exists, but it is', 'so the visitor lands in the wrong place') + ' Stop that publisher (Ctrl+C) and try again.' : '' }; },
+      hints: ["Read the locator's warning in the robot log, then look at the tree: `ros2 run tf2_ros tf2_echo camera_link camera_optical_frame`", 'From `camera_link` (x forward, y left, z up) to the optical frame (z forward, x right, y down) is a pure rotation, with no offset. Which turn about x, then about z, takes one to the other?', 'Publish it: `ros2 run tf2_ros static_transform_publisher --roll -1.5708 --yaw -1.5708 --frame-id camera_link --child-frame-id camera_optical_frame`'],
+      fix: 'ros2 run tf2_ros static_transform_publisher --roll -1.5708 --yaw -1.5708 --frame-id camera_link --child-frame-id camera_optical_frame',
+      debrief: "Last year's description had no `camera_optical_frame`, so the locator could not move image points into `base_link`. Cameras get two frames on purpose: `camera_link` follows the robot convention (x forward, y left, z up, REP 103) and the optical frame follows the image (z forward, x right, y down). The fixed rotation between them is a roll of −90° and then a yaw of −90°. Leave it out, or get it wrong, and every 3D point from the camera lands in the wrong place, often in the floor or the ceiling. Keep the optical joint in the URDF, so robot_state_publisher sends it with the rest.",
+    },
+  ],
 };
 const fixPubs = (sim, topic) => { const T = sim.bus.topics.get(topic); return T ? T.pubs.size : 0; };
 // how far a published frame is from the sensor it should name (the lidar unless told otherwise), both relative to the robot's root
@@ -195,7 +267,7 @@ const SnoFix = {
     const st = F.stats, pos = sim.fixPos ? sim.fixPos() : [sim.x, sim.y], prev = F.prev || pos, d = Math.hypot(pos[0] - prev[0], pos[1] - prev[1]); F.prev = pos;
     // joystick distance counts only when the joystick's own commands reach the base (directly or through a relay)
     const tl = sim._tele, joy = tl && sim.t - tl.last < 0.35 && (tl.vx || tl.vy || tl.wz), src = sim.cmd.src || '';
-    if (joy && sim.cmdLive(0.35) && (src === '/teleop_panel' || src.startsWith('/relay')) && d < 0.5) st.joy += d;
+    if (joy && sim.cmdLive(0.35) && (src === '/teleop_panel' || src.startsWith('/relay')) && d < 0.5 && (!sim.fixWalking || sim.fixWalking())) st.joy += d;
     if (sim.cmdLive(0.35)) st.vmax = Math.max(st.vmax, Math.abs(sim.fixVx ? sim.fixVx() : sim.vx || 0));
     if (sim.fixTick) sim.fixTick(st, dt, d);
     F.acc = (F.acc || 0) + dt; if (F.acc < 0.25) return; F.acc = 0;
