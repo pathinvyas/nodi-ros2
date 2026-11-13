@@ -25,7 +25,7 @@ const SNO_DEFS = {
     make: (d) => new AinexSim(d),
     view: { dist: 1.15, az: -2.45, el: 0.4, target: [-0.35, 0, 0.16], minDist: 0.3, maxDist: 5, shadow: 1.7, grid: null, fog: [5, 14] },
     hu: {
-      desc: huAinex, ctl: '/ainex_controller', legRe: /hip|knee|ank/, sole: { l: 'l_sole_link', r: 'r_sole_link' }, cameraParent: 'head_link',
+      desc: huAinex, ctl: '/ainex_controller', legRe: /hip|knee|ank/, sole: { l: 'l_sole_link', r: 'r_sole_link' }, cameraParent: 'head_link', staticJoints: AINEX_STATIC,
       map: { hy: 'hip_yaw', hr: 'hip_roll', hp: 'hip_pitch', kn: 'knee', ap: 'ank_pitch', ar: 'ank_roll', sp: 'sho_pitch', sr: 'sho_roll', ep: 'el_pitch', ey: 'el_yaw', gr: 'gripper', pan: 'head_pan', tilt: 'head_tilt' },
       side: { L: 'l_', R: 'r_' }, homeExtra: { tilt: 0.32 },
       order: [...legs6('l_', ['hip_yaw', 'hip_roll', 'hip_pitch', 'knee', 'ank_pitch', 'ank_roll']), ...legs6('r_', ['hip_yaw', 'hip_roll', 'hip_pitch', 'knee', 'ank_pitch', 'ank_roll']), ...legs6('l_', ['sho_pitch', 'sho_roll', 'el_pitch', 'el_yaw', 'gripper']), ...legs6('r_', ['sho_pitch', 'sho_roll', 'el_pitch', 'el_yaw', 'gripper']), 'head_pan', 'head_tilt'],
@@ -330,13 +330,13 @@ class TagReader(Node):
   },
   r1: {
     id: 'r1', name: 'Unitree R1', maker: 'Unitree', catLabel: 'Humanoid', color: '#2F6FD0', hz: 60, cams: true,
-    blurb: 'A 1.2 m humanoid with a state machine (damp, stand, walk, run) and low-level PD control of all 26 motors while it hangs from a gantry.',
-    chipsHub: ['26 joints', '1.2 m', 'PD control'], tabs: HU_TABS, kbd: HU_KBD, keysHint: 'W A S D walk, Q E side-step.', teleop: [0.5, 1.0],
-    mainNodes: ['/r1_controller'],
+    blurb: 'A 1.2 m humanoid with a state machine (damp, stand, walk, run), low-level PD control of all 26 motors in a gantry, an RGB-D head camera with a visitor to follow, and broken robots to fix.',
+    chipsHub: ['26 joints', 'RGB-D camera + OpenCV', 'fix-it tickets'], tabs: [...HU_TABS.slice(0, -1), ['fix', 'bug', 'Fix it'], ['vision', 'camera', 'Vision'], HU_TABS[HU_TABS.length - 1]], kbd: HU_KBD, keysHint: 'W A S D walk, Q E side-step.', teleop: [0.5, 1.0],
+    mainNodes: ['/r1_controller', '/robot_state_publisher', '/head_camera', '/person_locator'],
     make: (d) => new R1Sim(d),
     view: { dist: 3.0, az: -2.45, el: 0.3, target: [0, 0, 0.6], minDist: 0.8, maxDist: 16, shadow: 3.2, grid: [40, 40], fog: [12, 40] },
     hu: {
-      desc: huR1, ctl: '/r1_controller', legRe: /hip|knee|ankle/, sole: { l: 'left_sole_link', r: 'right_sole_link' }, cameraParent: 'head_link',
+      desc: huR1, ctl: '/r1_controller', legRe: /hip|knee|ankle/, sole: { l: 'left_sole_link', r: 'right_sole_link' }, cameraParent: 'head_link', staticJoints: R1_STATIC,
       map: { hp: 'hip_pitch_joint', hr: 'hip_roll_joint', hy: 'hip_yaw_joint', kn: 'knee_joint', ap: 'ankle_pitch_joint', ar: 'ankle_roll_joint', sp: 'shoulder_pitch_joint', sr: 'shoulder_roll_joint', sy: 'shoulder_yaw_joint', ep: 'elbow_joint', wr: 'wrist_roll_joint', pan: 'head_yaw_joint', tilt: 'head_pitch_joint', wy: 'waist_yaw_joint', wp: 'waist_pitch_joint' },
       side: { L: 'left_', R: 'right_' },
       order: [...legs6('left_', ['hip_pitch_joint', 'hip_roll_joint', 'hip_yaw_joint', 'knee_joint', 'ankle_pitch_joint', 'ankle_roll_joint']), ...legs6('right_', ['hip_pitch_joint', 'hip_roll_joint', 'hip_yaw_joint', 'knee_joint', 'ankle_pitch_joint', 'ankle_roll_joint']), 'waist_yaw_joint', 'waist_pitch_joint', ...legs6('left_', ['shoulder_pitch_joint', 'shoulder_roll_joint', 'shoulder_yaw_joint', 'elbow_joint', 'wrist_roll_joint']), ...legs6('right_', ['shoulder_pitch_joint', 'shoulder_roll_joint', 'shoulder_yaw_joint', 'elbow_joint', 'wrist_roll_joint']), 'head_yaw_joint', 'head_pitch_joint'],
@@ -347,12 +347,12 @@ class TagReader(Node):
       actionTopic: '/action', stateTopic: '/loco/state', standSrv: '/loco/stand_up',
       gait: { stepH: 0.06, maxV: 0.45, maxVy: 0.25, maxW: 1.0, arm: 0.35 },
       run: { fixed: true, Tss: 0.3, Tds: 0.06, stepH: 0.06, maxV: 0.55, maxVy: 0.2, maxW: 1.0, arm: 0.6 },
-      camZ: 0.5, camLabel: 'head camera', camVfov: 60, hfov: 80 * Math.PI / 180,
+      camZ: 0.5, camLabel: 'head camera · RGB-D', camVfov: R1_CAM.vfov, hfov: R1_CAM.hfov,
       groups: [['Head & waist', ['pan', 'tilt', 'wy', 'wp']], ['Left arm', ['L.sp', 'L.sr', 'L.sy', 'L.ep', 'L.wr']], ['Right arm', ['R.sp', 'R.sr', 'R.sy', 'R.ep', 'R.wr']], ['Left leg', ['L.hp', 'L.hr', 'L.hy', 'L.kn', 'L.ap', 'L.ar']], ['Right leg', ['R.hp', 'R.hr', 'R.hy', 'R.kn', 'R.ap', 'R.ar']]],
       objs: [],
     },
-    pkgs: { r1_demos: ['wave', 'bow', 'dance', 'kungfu', 'handshake', 'squat', 'raise_arms'] },
-    chips: ['ros2 topic echo /loco/state', 'ros2 service call /loco/set_mode snobots_msgs/srv/SetMode "{mode: run}"', 'ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.6}}"', 'ros2 topic pub --once /action std_msgs/msg/String "{data: dance}"', 'ros2 service call /sim/push std_srvs/srv/Trigger', 'ros2 topic echo /imu --once', 'ros2 interface show snobots_msgs/msg/LowCmd', 'ros2 run tf2_ros tf2_echo base_link left_sole_link'],
+    pkgs: { r1_demos: ['wave', 'bow', 'dance', 'kungfu', 'handshake', 'squat', 'raise_arms', 'follow_me.launch.py'] },
+    chips: ['ros2 node list', 'ros2 topic echo /loco/state', 'ros2 service call /loco/set_mode snobots_msgs/srv/SetMode "{mode: run}"', 'ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.6}}"', 'ros2 topic pub --once /action std_msgs/msg/String "{data: dance}"', 'ros2 service call /sim/push std_srvs/srv/Trigger', 'ros2 interface show snobots_msgs/msg/LowCmd', 'ros2 topic hz /head_camera/color/image_raw', 'ros2 topic echo /person_position', 'ros2 launch r1_demos follow_me.launch.py', 'ros2 run tf2_ros tf2_echo base_link camera_optical_frame'],
     help: `Unitree R1 simulator terminal (ROS 2 Jazzy).
   ros2 service call /loco/set_mode snobots_msgs/srv/SetMode "{mode: walk}"     (damp, stand, walk, run, lowlevel)
   ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.6}, angular: {z: 0.4}}"
@@ -361,7 +361,10 @@ class TagReader(Node):
   ros2 topic pub --once /joint_commands sensor_msgs/msg/JointState "{name: [left_shoulder_pitch_joint], position: [-1.57]}"
   ros2 interface show snobots_msgs/msg/LowCmd       (low-level PD commands: Low-level mode only)
   ros2 service call /sim/push std_srvs/srv/Trigger    ros2 param set /r1_controller balance false
-  ros2 run r1_demos dance    ros2 run tf2_ros tf2_echo base_link head_link
+  ros2 run r1_demos dance    ros2 run tf2_ros tf2_echo base_link camera_optical_frame
+  ros2 topic hz /head_camera/color/image_raw      ros2 topic echo /head_camera/depth/camera_info --once
+  ros2 topic echo /person_position                ros2 launch r1_demos follow_me.launch.py
+  ros2 param get /person_locator depth_scale      ros2 run r1_camera head_camera_node
 Keys: Up/Down history · Tab completes · Ctrl+C stops · Ctrl+L clears`,
     missions: [
       { id: 'm1', title: 'Walk 2 m', text: 'Walk R1 2 m forward with the joystick, the buttons or W/A/S/D.', tab: 'control', xp: 15 },
@@ -373,12 +376,18 @@ Keys: Up/Down history · Tab completes · Ctrl+C stops · Ctrl+L clears`,
       { id: 'm7', title: 'PD tuner', text: 'In **Low-level** mode, hold left_shoulder_pitch_joint at −90° (arm straight forward) within 3° for 2 s. Gravity pulls the arm down, so raise kp or add τ_ff.', tab: 'joints', xp: 30 },
       { id: 'm8', title: 'Terminal walker', text: 'Walk 1 m using only `ros2 topic pub` on /cmd_vel.', tab: 'term', xp: 20 },
       { id: 'm9', title: 'Code it', text: 'Run a Python node that walks R1 1 m, or sends 20 /lowcmd messages.', tab: 'code', xp: 30 },
+      { id: 'v1', title: 'Camera check', text: 'In the Terminal, measure the head camera\'s frame rate with `ros2 topic hz /head_camera/color/image_raw`, then read the depth camera\'s intrinsics once: `ros2 topic echo /head_camera/depth/camera_info --once`.', tab: 'term', xp: 15, vision: true },
+      { id: 'v2', title: 'How far away?', text: 'Run **How far is the visitor?**: your node must publish the visitor\'s distance in metres (the depth of their violet vest) on `/visitor_distance` as std_msgs/Float32, 10 times within 10 cm.', tab: 'vision', xp: 30, vision: true, tpl: 'distance' },
+      { id: 'v3', title: 'Eyes on the visitor', text: 'Set the visitor to **Stroll** (Control tab) and run the **Head tracker**: your node must keep the violet vest in the middle of the picture for 5 s by turning R1\'s head.', tab: 'vision', xp: 30, vision: true, tpl: 'head' },
+      { id: 'v4', title: 'Follow me', text: 'With the visitor strolling, run **Follow the visitor**: your node must keep R1 0.7 to 1.4 m away from them for 10 s, walking with `/cmd_vel`.', tab: 'vision', xp: 40, vision: true, tpl: 'follow' },
+      { id: 'v5', title: 'A point in 3D', text: 'Run **Where is the visitor? (3D)**: turn the vest\'s pixel and its depth into a 3D point with the camera\'s intrinsics, and publish it on `/visitor_point` as geometry_msgs/PointStamped. 10 points within 25 cm of the visitor count.', tab: 'vision', xp: 50, vision: true, tpl: 'point' },
     ],
-    specs: [['Maker', 'Unitree'], ['Type', 'Full-size humanoid'], ['Size', '≈ 1210 × 357 × 190 mm'], ['Weight', '≈ 25–29 kg (by version)'], ['Joints', '20 (R1 Air), 24–26 (R1), up to 40 with dexterous hands (EDU)'], ['Arm length', '435 mm (upper arm + forearm)'], ['Head', 'Binocular camera'], ['Compute', '8-core CPU'], ['Battery', 'about 1 hour'], ['This sim', '26 joints: legs 12, waist 2, arms 10, head 2']],
-    ifaces: [['/cmd_vel', 'subscribe', 'geometry_msgs/msg/Twist', 'Walk and run velocity (in walk or run mode)'], ['/action', 'subscribe', 'std_msgs/msg/String', 'dance, kungfu, wave, handshake, bow, squat, raise_arms'], ['/joint_commands', 'subscribe', 'sensor_msgs/msg/JointState', 'Joint targets by name; in Low-level mode they set q_des'], ['/lowcmd', 'subscribe', 'snobots_msgs/msg/LowCmd', 'Per-motor q, dq, kp, kd, τ (Low-level mode only)'], ['/lowstate', 'publish', 'snobots_msgs/msg/LowState', 'Per-motor q, dq, estimated torque, temperature, 25 Hz'], ['/joint_states', 'publish', 'sensor_msgs/msg/JointState', 'All 26 joints, 25 Hz'], ['/imu', 'publish', 'sensor_msgs/msg/Imu', 'Pelvis orientation and rates, 50 Hz'], ['/odom', 'publish', 'nav_msgs/msg/Odometry', 'Walking odometry, 20 Hz'], ['/loco/state', 'publish', 'std_msgs/msg/String', 'standing, walking, running, damp, lowlevel, fallen…'], ['/loco/set_mode', 'service', 'snobots_msgs/srv/SetMode', 'damp, stand, walk, run, lowlevel'], ['/loco/stand_up', 'service', 'std_srvs/srv/Trigger', 'Get up from damp or after a fall'], ['/sim/push', 'service', 'std_srvs/srv/Trigger', 'Simulator only: push the robot'], ['/reset_world', 'service', 'std_srvs/srv/Empty', 'Reset the robot'], ['/r1_controller', 'parameters', 'double / bool', '`max_linear_speed` (walk), `max_run_speed`, `step_height`, `step_period`, `body_height`, `balance`']],
+    visionNote: 'R1\'s head camera (`/head_camera`) publishes colour on `/head_camera/color/image_raw` (320 × 240 `rgb8`, 15 Hz, 90° wide) and depth on `/head_camera/depth/image_raw` (`16UC1` in millimetres, aligned pixel for pixel with the colour image; 0 means no depth), each with its own `camera_info`. Aim the head with `/joint_commands` (`head_yaw_joint`, `head_pitch_joint`). The visitor wears a violet vest: make them stand or stroll in the Control tab. Pick the depth topic above and click the picture to read a pixel\'s depth.',
+    specs: [['Maker', 'Unitree'], ['Type', 'Full-size humanoid'], ['Size', '≈ 1210 × 357 × 190 mm'], ['Weight', '≈ 25–29 kg (by version)'], ['Joints', '20 (R1 Air), 24–26 (R1), up to 40 with dexterous hands (EDU)'], ['Arm length', '435 mm (upper arm + forearm)'], ['Head', 'Binocular depth camera, 2-DOF neck'], ['Compute', '8-core CPU'], ['Battery', 'about 1 hour'], ['This sim', '26 joints: legs 12, waist 2, arms 10, head 2; RGB-D head camera, 320 × 240 at 15 Hz']],
+    ifaces: [['/cmd_vel', 'subscribe', 'geometry_msgs/msg/Twist', 'Walk and run velocity (in walk or run mode)'], ['/action', 'subscribe', 'std_msgs/msg/String', 'dance, kungfu, wave, handshake, bow, squat, raise_arms'], ['/joint_commands', 'subscribe', 'sensor_msgs/msg/JointState', 'Joint targets by name; in Low-level mode they set q_des'], ['/lowcmd', 'subscribe', 'snobots_msgs/msg/LowCmd', 'Per-motor q, dq, kp, kd, τ (Low-level mode only)'], ['/lowstate', 'publish', 'snobots_msgs/msg/LowState', 'Per-motor q, dq, estimated torque, temperature, 25 Hz'], ['/joint_states', 'publish', 'sensor_msgs/msg/JointState', 'All 26 joints, 25 Hz'], ['/imu', 'publish', 'sensor_msgs/msg/Imu', 'Pelvis orientation and rates, 50 Hz'], ['/odom', 'publish', 'nav_msgs/msg/Odometry', 'Walking odometry, 20 Hz'], ['/loco/state', 'publish', 'std_msgs/msg/String', 'standing, walking, running, damp, lowlevel, fallen…'], ['/loco/set_mode', 'service', 'snobots_msgs/srv/SetMode', 'damp, stand, walk, run, lowlevel'], ['/loco/stand_up', 'service', 'std_srvs/srv/Trigger', 'Get up from damp or after a fall'], ['/sim/push', 'service', 'std_srvs/srv/Trigger', 'Simulator only: push the robot'], ['/reset_world', 'service', 'std_srvs/srv/Empty', 'Reset the robot'], ['/r1_controller', 'parameters', 'double / bool', '`max_linear_speed` (walk), `max_run_speed`, `cmd_timeout`, `step_height`, `step_period`, `body_height`, `balance`'], ['/head_camera/color/image_raw', 'publish', 'sensor_msgs/msg/Image', 'Head camera colour (`/head_camera`): 320 × 240 `rgb8`, 15 Hz, rendered while someone subscribes'], ['/head_camera/depth/image_raw', 'publish', 'sensor_msgs/msg/Image', 'Depth aligned to the colour image: `16UC1` millimetres, 0 = no depth (0.2 to 6 m)'], ['/head_camera/color/camera_info', 'publish', 'sensor_msgs/msg/CameraInfo', 'fx = fy = 160 px, cx 159.5, cy 119.5, no distortion; the depth camera_info is the same'], ['/person_position', 'publish', 'geometry_msgs/msg/PointStamped', '`/person_locator`: the visitor in `base_link`, up to 15 Hz'], ['/person_locator', 'parameters', 'double / string', '`depth_scale` (depth units to metres), `target_frame`, `max_range`'], ['/follow_me', 'parameters', 'double', '`follow_distance`, `head_kp`, `max_speed`, while the follow-me demo runs']],
     jointDoc: 'Motor index order (used by /lowcmd and /lowstate): 0–5 left leg (`hip_pitch, hip_roll, hip_yaw, knee, ankle_pitch, ankle_roll`), 6–11 right leg, 12 `waist_yaw`, 13 `waist_pitch`, 14–18 left arm (`shoulder_pitch, shoulder_roll, shoulder_yaw, elbow, wrist_roll`), 19–23 right arm, 24 `head_yaw`, 25 `head_pitch`. Full names end in `_joint`, for example `left_knee_joint`. In /lowcmd, `mode` 1 applies a motor command and 0 keeps the current one.',
-    realism: 'Physics comes from the simulator\'s own MuJoCo-style rigid-body engine (not MuJoCo itself): about 25 kg spread over the links, torque- and speed-limited joint motors, and foot contacts with friction. Unitree trains walking policies for its humanoids, R1 included, with reinforcement learning in simulators such as MuJoCo and Isaac Lab. This simulator uses a model-based controller instead (footstep planning, a linear-inverted-pendulum centre-of-mass plan and capture-point stepping), so its gait, top speed and push recovery differ from the real robot\'s. Getting up after a fall uses a virtual gantry hoist. Low-level mode follows the same idea as Unitree\'s SDK (each motor gets q, dq, kp, kd and a feed-forward torque) with the robot hanging from a gantry rope, but topic and message names are simplified for the simulator. Never try low-level code on a real humanoid without a gantry or harness and an emergency stop.',
-    pyHint: 'Pick a template and press Run. For the PD template, switch R1 to Low-level mode first (Control tab).',
+    realism: 'Physics comes from the simulator\'s own MuJoCo-style rigid-body engine (not MuJoCo itself): about 25 kg spread over the links, torque- and speed-limited joint motors, and foot contacts with friction. Unitree trains walking policies for its humanoids, R1 included, with reinforcement learning in simulators such as MuJoCo and Isaac Lab. This simulator uses a model-based controller instead (footstep planning, a linear-inverted-pendulum centre-of-mass plan and capture-point stepping), so its gait, top speed and push recovery differ from the real robot\'s. Getting up after a fall uses a virtual gantry hoist. Low-level mode follows the same idea as Unitree\'s SDK (each motor gets q, dq, kp, kd and a feed-forward torque) with the robot hanging from a gantry rope, but topic and message names are simplified for the simulator. Never try low-level code on a real humanoid without a gantry or harness and an emergency stop. The head camera simplifies the binocular depth camera to a registered colour and depth pair from an ideal pinhole (no lens distortion), 320 × 240 at 15 Hz and 90° wide; the real camera\'s images are larger and wider. Its depth noise grows with distance squared, as with stereo. The camera driver, vision nodes and their topic names are the simulator\'s own.',
+    pyHint: 'Pick a template and press Run. For the PD template, switch R1 to Low-level mode first (Control tab). The camera templates are in the Vision tab.',
     py: {
       walk: { label: 'Walk a plan (/cmd_vel)', code: PY_HEAD + `from geometry_msgs.msg import Twist
 
@@ -473,6 +482,221 @@ class TiltWatch(Node):
             self.get_logger().warn(f'new max tilt: {tilt:.1f} deg')
             self.alarm.publish(String(data=f'tilt {tilt:.1f}'))
 ` + PY_MAIN('TiltWatch') },
+      cam: { label: 'RGB-D viewer (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+
+class RGBDViewer(Node):
+    """Show R1's colour image and its depth image, coloured from near (red) to far (blue)."""
+
+    def __init__(self):
+        super().__init__('rgbd_viewer')
+        self.bridge = CvBridge()
+        self.create_subscription(Image, '/head_camera/color/image_raw', self.on_color, 10)
+        self.create_subscription(Image, '/head_camera/depth/image_raw', self.on_depth, 10)
+        self.frames = 0
+
+    def on_color(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')   # OpenCV images are BGR
+        cv2.imshow('colour', frame)                                       # windows appear over the 3D view
+        cv2.waitKey(1)
+
+    def on_depth(self, msg):
+        depth = self.bridge.imgmsg_to_cv2(msg)    # uint16 millimetres (16UC1); 0 = no depth there
+        h, w = depth.shape
+        self.frames += 1
+        valid = depth[depth > 0]
+        if self.frames % 30 == 1 and valid.size:
+            mm = int(depth[h // 2, w // 2])
+            self.get_logger().info(f'centre pixel {mm} mm = {mm / 1000:.2f} m; nearest {valid.min() / 1000:.2f} m, farthest {valid.max() / 1000:.2f} m')
+        scaled = np.clip(depth, 0, 6000).astype(np.float32) * (255.0 / 6000.0)   # 0 to 6 m becomes 0 to 255
+        vis = cv2.applyColorMap((255 - scaled).astype(np.uint8), cv2.COLORMAP_JET)
+        vis[depth == 0] = 0                                                     # no depth: black
+        cv2.imshow('depth', vis)
+        cv2.waitKey(1)
+` + PY_MAIN('RGBDViewer') },
+      distance: { label: 'How far is the visitor? (depth)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from std_msgs.msg import Float32
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+VEST_LO = np.array([125, 80, 40])     # OpenCV HSV (H 0-179, S and V 0-255): the visitor's violet vest
+VEST_HI = np.array([155, 255, 255])
+
+
+class VisitorDistance(Node):
+    """Find the violet vest in the colour image and read its distance from the aligned depth image."""
+
+    def __init__(self):
+        super().__init__('visitor_distance')
+        self.bridge = CvBridge()
+        self.depth = None
+        self.pub = self.create_publisher(Float32, '/visitor_distance', 10)
+        self.create_subscription(Image, '/head_camera/depth/image_raw', self.on_depth, 10)
+        self.create_subscription(Image, '/head_camera/color/image_raw', self.on_color, 10)
+
+    def on_depth(self, msg):
+        self.depth = self.bridge.imgmsg_to_cv2(msg)    # uint16 millimetres, on the colour image's pixel grid
+
+    def on_color(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        mask = cv2.inRange(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV), VEST_LO, VEST_HI)
+        if self.depth is not None and cv2.countNonZero(mask) > 40:
+            d = self.depth[(mask > 0) & (self.depth > 0)]        # the depth under the vest, holes left out
+            if d.size:
+                metres = float(np.median(d)) / 1000.0            # the median shrugs off noise and edge pixels
+                self.pub.publish(Float32(data=metres))
+                x, y, w, h = cv2.boundingRect(mask)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(frame, f'{metres:.2f} m', (x, max(12, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                self.get_logger().info(f'the visitor is {metres:.2f} m away', throttle_duration_sec=1.0)
+        cv2.imshow('visitor', frame)
+        cv2.waitKey(1)
+` + PY_MAIN('VisitorDistance') },
+      head: { label: 'Head tracker (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image, JointState
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+VEST_LO = np.array([125, 80, 40])
+VEST_HI = np.array([155, 255, 255])
+KP = 0.4     # radians of head turn per unit of image error (the picture is about 1.57 rad wide)
+
+
+class HeadTracker(Node):
+    """Keep the visitor's violet vest in the middle of the picture by turning R1's head."""
+
+    def __init__(self):
+        super().__init__('head_tracker')
+        self.bridge = CvBridge()
+        self.yaw, self.pitch = 0.0, 0.0      # the head's angles, kept up to date from /joint_states
+        self.pub = self.create_publisher(JointState, '/joint_commands', 10)
+        self.create_subscription(JointState, '/joint_states', self.on_joints, 10)
+        self.create_subscription(Image, '/head_camera/color/image_raw', self.on_image, 10)
+
+    def on_joints(self, msg):
+        for name, pos in zip(msg.name, msg.position):
+            if name == 'head_yaw_joint':
+                self.yaw = pos
+            elif name == 'head_pitch_joint':
+                self.pitch = pos
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = frame.shape[:2]
+        mask = cv2.inRange(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV), VEST_LO, VEST_HI)
+        m = cv2.moments(mask)
+        if m['m00'] > 40 * 255:                    # at least about 40 violet pixels
+            cx, cy = m['m10'] / m['m00'], m['m01'] / m['m00']
+            ex = (cx - w / 2) / (w / 2)            # -1 (left edge) .. +1 (right edge)
+            ey = (cy - h / 2) / (h / 2)            # -1 (top) .. +1 (bottom)
+            cmd = JointState()
+            cmd.name = ['head_yaw_joint', 'head_pitch_joint']
+            cmd.position = [self.yaw - KP * ex,      # head_yaw turns left when positive
+                            self.pitch + KP * ey]    # head_pitch looks down when positive
+            self.pub.publish(cmd)
+            cv2.circle(frame, (int(cx), int(cy)), 10, (0, 255, 0), 2)
+        cv2.imshow('visitor', frame)
+        cv2.imshow('vest mask', mask)
+        cv2.waitKey(1)
+` + PY_MAIN('HeadTracker') },
+      follow: { label: 'Follow the visitor (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from geometry_msgs.msg import Twist
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+VEST_LO = np.array([125, 80, 40])
+VEST_HI = np.array([155, 255, 255])
+KEEP = 0.8         # metres of depth to keep between the camera and the vest
+KP_TURN = 1.0      # rad/s of turning per unit of image error
+KP_WALK = 0.6      # m/s per metre of distance error
+
+
+class Follower(Node):
+    """Walk after the visitor: turn toward the violet vest, and walk until its depth is KEEP metres."""
+
+    def __init__(self):
+        super().__init__('follower')
+        self.bridge = CvBridge()
+        self.depth = None
+        self.pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.create_subscription(Image, '/head_camera/depth/image_raw', self.on_depth, 10)
+        self.create_subscription(Image, '/head_camera/color/image_raw', self.on_color, 10)
+
+    def on_depth(self, msg):
+        self.depth = self.bridge.imgmsg_to_cv2(msg)
+
+    def on_color(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = frame.shape[:2]
+        mask = cv2.inRange(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV), VEST_LO, VEST_HI)
+        cmd = Twist()
+        if self.depth is not None and cv2.countNonZero(mask) > 40:
+            m = cv2.moments(mask)
+            ex = (m['m10'] / m['m00'] - w / 2) / (w / 2)       # -1 (left) .. +1 (right)
+            d = self.depth[(mask > 0) & (self.depth > 0)]
+            if d.size:
+                dist = float(np.median(d)) / 1000.0
+                cmd.angular.z = -KP_TURN * ex                   # turn toward the vest
+                if abs(ex) < 0.4:                               # roughly facing it: close the gap to KEEP
+                    cmd.linear.x = max(-0.1, min(0.35, KP_WALK * (dist - KEEP)))
+                self.get_logger().info(f'visitor at {dist:.2f} m', throttle_duration_sec=1.0)
+        self.pub.publish(cmd)      # nobody seen: an all-zero Twist, so R1 stands still
+        cv2.imshow('follow', frame)
+        cv2.waitKey(1)
+` + PY_MAIN('Follower') },
+      point: { label: 'Where is the visitor? (3D)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image, CameraInfo
+from geometry_msgs.msg import PointStamped
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+VEST_LO = np.array([125, 80, 40])
+VEST_HI = np.array([155, 255, 255])
+
+
+class VisitorPoint(Node):
+    """Turn the vest's pixel and its depth into a 3D point with the camera's intrinsics (the pinhole model)."""
+
+    def __init__(self):
+        super().__init__('visitor_point')
+        self.bridge = CvBridge()
+        self.depth, self.K = None, None
+        self.pub = self.create_publisher(PointStamped, '/visitor_point', 10)
+        self.create_subscription(CameraInfo, '/head_camera/color/camera_info', self.on_info, 10)
+        self.create_subscription(Image, '/head_camera/depth/image_raw', self.on_depth, 10)
+        self.create_subscription(Image, '/head_camera/color/image_raw', self.on_color, 10)
+
+    def on_info(self, msg):
+        self.K = list(msg.k)      # [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+
+    def on_depth(self, msg):
+        self.depth = self.bridge.imgmsg_to_cv2(msg)
+
+    def on_color(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        mask = cv2.inRange(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV), VEST_LO, VEST_HI)
+        if self.K is None or self.depth is None or cv2.countNonZero(mask) < 40:
+            return
+        d = self.depth[(mask > 0) & (self.depth > 0)]
+        if d.size == 0:
+            return
+        m = cv2.moments(mask)
+        u, v = m['m10'] / m['m00'], m['m01'] / m['m00']   # the vest's centre, in pixels
+        z = float(np.median(d)) / 1000.0                   # metres along the optical axis
+        fx, fy, cx, cy = self.K[0], self.K[4], self.K[2], self.K[5]
+        p = PointStamped()
+        p.header = msg.header             # same time and frame as the image: camera_optical_frame
+        p.point.x = (u - cx) * z / fx     # right
+        p.point.y = (v - cy) * z / fy     # down
+        p.point.z = z                     # forward
+        self.pub.publish(p)
+        self.get_logger().info(f'visitor at x {p.point.x:+.2f}, y {p.point.y:+.2f}, z {p.point.z:.2f} m in {msg.header.frame_id}', throttle_duration_sec=1.0)
+` + PY_MAIN('VisitorPoint') },
     },
   },
   limo: {
@@ -777,14 +1001,14 @@ class MarkerReader(Node):
   },
   cobot: {
     id: 'cobot', name: 'LIMO Cobot', maker: 'AgileX', catLabel: 'Autonomous car + arm', color: '#B144C8', hz: 60, cams: true, mSlam: null, cobot: true,
-    blurb: 'A LIMO base carrying a 6-axis arm. Drive to the table, pick cubes with inverse kinematics and sort them into the matching bins.',
-    chipsHub: ['6-axis arm', '280 mm reach', 'pick & place'], tabs: [['control', 'drive', 'Drive'], ['arm', 'tools', 'Arm'], ['phys', 'chip', 'Physics'], ['term', 'terminal', 'Terminal'], ['code', 'code', 'Code'], ['topics', 'topics', 'Topics'], ['missions', 'flag', 'Missions'], ['info', 'book', 'Info']],
+    blurb: 'A LIMO base carrying a 6-axis arm with a camera on its gripper. Find cubes by colour, pick them with inverse kinematics, sort them into the matching bins, and fix the robot when it breaks.',
+    chipsHub: ['6-axis arm', 'camera on the gripper', 'fix-it tickets'], tabs: [['control', 'drive', 'Drive'], ['arm', 'tools', 'Arm'], ['phys', 'chip', 'Physics'], ['term', 'terminal', 'Terminal'], ['code', 'code', 'Code'], ['topics', 'topics', 'Topics'], ['missions', 'flag', 'Missions'], ['fix', 'bug', 'Fix it'], ['vision', 'camera', 'Vision'], ['info', 'book', 'Info']],
     kbd: CAR_KBD, keysHint: 'W A S D drive, Q E slide in mecanum mode. Click the floor to send a navigation goal.', teleop: [0.4, 1.0],
-    mainNodes: ['/limo_base', '/arm_driver', '/ydlidar_node'], arena: COBOT_ARENA, desc: () => cobotDesc(),
+    mainNodes: ['/limo_base', '/arm_driver', '/ydlidar_node', '/arm_camera', '/cube_detector'], arena: COBOT_ARENA, desc: () => cobotDesc(),
     make: (d) => new CobotSim(d),
     view: { dist: 1.35, az: 2.6, el: 0.45, target: [1.2, 2.2, 0.18], minDist: 0.3, maxDist: 10, shadow: 3.4, grid: null, fog: [9, 26] },
     pkgs: { limo_bringup: ['slam.launch.py', 'navigation.launch.py'], cobot_demos: ['pick_place.launch.py', 'go_home', 'open_gripper', 'close_gripper'] },
-    chips: ['ros2 topic echo /arm/angles --once', 'ros2 topic pub --once /arm/angles_goal snobots_msgs/msg/ArmAngles "{angles: [0, 0, 0, 0, 0, 0], speed: 50}"', 'ros2 topic pub --once /arm/gripper std_msgs/msg/Int32 "{data: 0}"', 'ros2 service call /arm/go_home std_srvs/srv/Trigger', 'ros2 topic pub --once /arm/coords_goal snobots_msgs/msg/ArmCoords "{x: 180, y: 0, z: 40, rx: 180, ry: 0, rz: 0, speed: 50}"', 'ros2 launch cobot_demos pick_place.launch.py', 'ros2 run tf2_ros tf2_echo arm_base tcp'],
+    chips: ['ros2 topic echo /arm/angles --once', 'ros2 topic pub --once /arm/angles_goal snobots_msgs/msg/ArmAngles "{angles: [0, 0, 0, 0, 0, 0], speed: 50}"', 'ros2 topic pub --once /arm/gripper std_msgs/msg/Int32 "{data: 0}"', 'ros2 service call /arm/go_home std_srvs/srv/Trigger', 'ros2 topic pub --once /arm/coords_goal snobots_msgs/msg/ArmCoords "{x: 180, y: 0, z: 40, rx: 180, ry: 0, rz: 0, speed: 50}"', 'ros2 launch cobot_demos pick_place.launch.py', 'ros2 run tf2_ros tf2_echo arm_base tcp', 'ros2 topic hz /arm_camera/image_raw', 'ros2 topic echo /cube_detections', 'ros2 service call /arm/servos std_srvs/srv/SetBool "{data: true}"'],
     help: `LIMO Cobot simulator terminal (ROS 2 Jazzy).
   ros2 topic pub --once /arm/angles_goal snobots_msgs/msg/ArmAngles "{angles: [0, -30, -60, 0, 0, 0], speed: 50}"
   ros2 topic pub --once /arm/coords_goal snobots_msgs/msg/ArmCoords "{x: 200, y: 0, z: 50, rx: 180, ry: 0, rz: 0, speed: 50}"
@@ -793,7 +1017,10 @@ class MarkerReader(Node):
   ros2 topic echo /arm/angles --once | /arm/coords --once | /joint_states --once
   ros2 topic pub --rate 10 /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.2}}"
   ros2 launch cobot_demos pick_place.launch.py      ros2 launch limo_bringup navigation.launch.py
-  ros2 run tf2_ros tf2_echo arm_base tcp
+  ros2 run tf2_ros tf2_echo arm_base tcp     ros2 run tf2_ros tf2_echo arm_base arm_camera_optical_frame
+  ros2 topic hz /arm_camera/image_raw        ros2 topic echo /cube_detections
+  ros2 service call /arm/servos std_srvs/srv/SetBool "{data: true}"     (false releases them)
+  ros2 param get /cube_detector cube_size    ros2 run usb_cam usb_cam_node_exe
 Keys: Up/Down history · Tab completes · Ctrl+C stops · Ctrl+L clears`,
     missions: [
       { id: 'm1', title: 'Base twist', text: 'Turn joint1 (the arm base) to ±90° in the Arm tab.', tab: 'arm', xp: 10 },
@@ -804,12 +1031,18 @@ Keys: Up/Down history · Tab completes · Ctrl+C stops · Ctrl+L clears`,
       { id: 'm6', title: 'Sorted!', text: 'Drop a cube into the bin of the same colour.', tab: 'arm', xp: 25 },
       { id: 'm7', title: 'Mobile manipulator', text: 'Sort all three cubes, by hand or with the Pick & place demo.', tab: 'control', xp: 30 },
       { id: 'm8', title: 'Code it', text: 'Run a Python node that publishes /arm/angles_goal, or drives the base 1 m.', tab: 'code', xp: 30 },
+      { id: 'v1', title: 'Camera check', text: 'In the Terminal, measure the gripper camera\'s frame rate with `ros2 topic hz /arm_camera/image_raw`, then read its intrinsics once: `ros2 topic echo /arm_camera/camera_info --once`.', tab: 'term', xp: 15, vision: true },
+      { id: 'v2', title: 'Which colours?', text: 'Park at a cube (Drive tab) and press **Look down** (Arm tab), then run **Which colours?**: your node must publish the colours in the picture on `/cubes_seen` as std_msgs/String (like `red` or `green,red`), right 10 times.', tab: 'vision', xp: 25, vision: true, tpl: 'colours' },
+      { id: 'v3', title: 'Centre it', text: 'Park at the red cube, look down, and run **Centre the red cube**: your node must move the arm until the red cube sits in the middle of the picture for 2 s.', tab: 'vision', xp: 35, vision: true, tpl: 'centre' },
+      { id: 'v4', title: 'How far down?', text: 'Run **How far down is it?**: from the red cube\'s width in pixels and its real width (30 mm), publish the centre of its top face on `/cube_point` as geometry_msgs/PointStamped in the camera\'s frame. 10 points within 15 mm count.', tab: 'vision', xp: 40, vision: true, tpl: 'size' },
+      { id: 'v5', title: 'Pick by sight', text: 'Park at the red cube and run **Pick by sight**: your node finds the cube with the camera, centres it, moves the gripper over it and picks it up.', tab: 'vision', xp: 50, vision: true, tpl: 'vpick' },
     ],
-    specs: [['Maker', 'AgileX Robotics'], ['Type', 'Mobile manipulator: LIMO PRO base + myCobot 280 arm'], ['Size', '322 × 220 × 550 mm'], ['Weight', '≈ 5.6 kg'], ['Arm', '6 DOF, 280 mm working radius'], ['Arm payload', '250 g'], ['Arm weight', '850 g'], ['Base', 'Four motion modes, lidar, depth camera'], ['Software', 'ROS, SLAM navigation, MoveIt'], ['This sim', 'DH chain + numeric IK, 40 mm parallel gripper']],
-    ifaces: [['/arm/angles_goal', 'subscribe', 'snobots_msgs/msg/ArmAngles', '6 joint angles in degrees + speed (like `send_angles`)'], ['/arm/coords_goal', 'subscribe', 'snobots_msgs/msg/ArmCoords', 'Gripper pose x y z (mm), rx ry rz (deg) in the arm base frame (like `send_coords`)'], ['/arm/gripper', 'subscribe', 'std_msgs/msg/Int32', '0 closed … 100 open (like `set_gripper_value`)'], ['/arm/angles', 'publish', 'snobots_msgs/msg/ArmAngles', 'Current angles, 10 Hz'], ['/arm/coords', 'publish', 'snobots_msgs/msg/ArmCoords', 'Current gripper pose, 10 Hz'], ['/joint_states', 'publish', 'sensor_msgs/msg/JointState', 'joint1 … joint6 + gripper, 20 Hz'], ['/arm/go_home', 'service', 'std_srvs/srv/Trigger', 'Fold the arm'], ['/cmd_vel', 'subscribe', 'geometry_msgs/msg/Twist', 'Base velocity'], ['/odom, /scan, /imu, /limo_status', 'publish', 'as on LIMO', 'Base sensors'], ['/goal_pose', 'subscribe', 'geometry_msgs/msg/PoseStamped', 'Navigation goal (click the floor)']],
+    visionNote: 'The camera on the gripper (`/arm_camera`, a usb_cam) publishes `/arm_camera/image_raw` (320 × 240 `rgb8`, 15 Hz) and `/arm_camera/camera_info` (fx = fy = 200, no distortion) in `arm_camera_optical_frame`. It looks along the gripper from 30 mm beside it: with the gripper pointing down, the top of the picture is the arm\'s +x and its right is the arm\'s −y. Park at a cube (Drive tab) and press **Look down** (Arm tab) to see it from above. The cubes are 30 mm wide. Move the arm with `/arm/coords_goal` (mm, in `arm_base`) and read where it is on `/arm/coords`.',
+    specs: [['Maker', 'AgileX Robotics'], ['Type', 'Mobile manipulator: LIMO PRO base + myCobot 280 arm'], ['Size', '322 × 220 × 550 mm'], ['Weight', '≈ 5.6 kg'], ['Arm', '6 DOF, 280 mm working radius'], ['Arm payload', '250 g'], ['Arm weight', '850 g'], ['Base', 'Four motion modes, lidar, depth camera'], ['Software', 'ROS, SLAM navigation, MoveIt'], ['This sim', 'DH chain + numeric IK, 40 mm parallel gripper; a 320 × 240 camera on the gripper']],
+    ifaces: [['/arm/angles_goal', 'subscribe', 'snobots_msgs/msg/ArmAngles', '6 joint angles in degrees + speed (like `send_angles`)'], ['/arm/coords_goal', 'subscribe', 'snobots_msgs/msg/ArmCoords', 'Gripper pose x y z (mm), rx ry rz (deg) in the arm base frame (like `send_coords`)'], ['/arm/gripper', 'subscribe', 'std_msgs/msg/Int32', '0 closed … 100 open (like `set_gripper_value`)'], ['/arm/angles', 'publish', 'snobots_msgs/msg/ArmAngles', 'Current angles, 10 Hz'], ['/arm/coords', 'publish', 'snobots_msgs/msg/ArmCoords', 'Current gripper pose, 10 Hz'], ['/joint_states', 'publish', 'sensor_msgs/msg/JointState', 'joint1 … joint6 + gripper, 20 Hz'], ['/arm_camera/image_raw', 'publish', 'sensor_msgs/msg/Image', 'Camera on the gripper (`/arm_camera`): 320 × 240 `rgb8`, 15 Hz, rendered while someone subscribes'], ['/arm_camera/camera_info', 'publish', 'sensor_msgs/msg/CameraInfo', 'fx = fy = 200 px, cx 159.5, cy 119.5, no distortion'], ['/cube_detections', 'publish', 'snobots_msgs/msg/CubeDetection', '`/cube_detector`: each cube it sees, its colour and centre in `arm_base` (distance from its known size)'], ['/arm/servos', 'service', 'std_srvs/srv/SetBool', 'true powers the servos, false releases them for teaching by hand'], ['/arm_driver', 'parameters', 'int / bool / string', '`speed`, `gripper_reversed`, `reference_frame` (arm_base or base_link)'], ['/cube_detector', 'parameters', 'double / string', '`cube_size` (m), `target_frame`, `min_pixels`'], ['/arm/go_home', 'service', 'std_srvs/srv/Trigger', 'Fold the arm'], ['/cmd_vel', 'subscribe', 'geometry_msgs/msg/Twist', 'Base velocity'], ['/odom, /scan, /imu, /limo_status', 'publish', 'as on LIMO', 'Base sensors'], ['/goal_pose', 'subscribe', 'geometry_msgs/msg/PoseStamped', 'Navigation goal (click the floor)']],
     jointDoc: 'Arm joints `joint1` (base) … `joint6` (wrist roll); all zero points the arm straight up. Limits (°): ±168, ±135, ±150, ±145, ±165, ±175. Coordinates for /arm/coords_goal are in the `arm_base` frame: x forward, y left, z up, millimetres; rx 180, ry 0 points the gripper down.',
-    realism: 'The arm uses a myCobot-280-style DH chain (about 280 mm reach) and numeric inverse kinematics. It moves through the same physics engine as the base, with link masses, torque-limited servos and real contacts, so the fingers can nudge or knock a cube over. The real arm is driven with pymycobot (send_angles, send_coords, set_gripper_value) or Elephant Robotics\' ROS packages; the `/arm/*` topics are simplified simulator names. Grasping is partly simplified: once both fingers squeeze a cube, it is locked to the gripper so it cannot slip, whereas a real gripper holds it by friction alone. The base slips and its odometry drifts just like LIMO\'s.',
-    pyHint: 'Pick a template and press Run. Park facing the PICK table before running the pick template.',
+    realism: 'The arm uses a myCobot-280-style DH chain (about 280 mm reach) and numeric inverse kinematics. It moves through the same physics engine as the base, with link masses, torque-limited servos and real contacts, so the fingers can nudge or knock a cube over. The real arm is driven with pymycobot (send_angles, send_coords, set_gripper_value) or Elephant Robotics\' ROS packages; the `/arm/*` topics are simplified simulator names. Grasping is partly simplified: once both fingers squeeze a cube, it is locked to the gripper so it cannot slip, whereas a real gripper holds it by friction alone. The base slips and its odometry drifts just like LIMO\'s. The camera on the gripper is an ideal pinhole (no lens distortion), and its white balance setting is modelled as a colour cast over the picture. The arm driver, the camera on the gripper and the cube detector are the simulator\'s own versions of such nodes.',
+    pyHint: 'Pick a template and press Run. Park facing the PICK table before running the pick template. The camera templates are in the Vision tab.',
     py: {
       dance: { label: 'Arm poses (/arm/angles_goal)', code: PY_HEAD + `from snobots_msgs.msg import ArmAngles
 from std_msgs.msg import Int32
@@ -900,6 +1133,276 @@ class Rover(Node):
         cmd.linear.x = 0.25 if front > 0.4 else 0.0
         self.pub.publish(cmd)
 ` + PY_MAIN('Rover') },
+      cam: { label: 'Cube viewer (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+# OpenCV HSV ranges (H 0-179) for the three cubes, measured on this camera's picture: lit tops look paler than the
+# paint. They leave out the rest of the view: LIMO's dark-blue deck, its cyan lights and the lidar's orange ring.
+# Red wraps around 0, so it has two.
+COLOURS = {
+    'red': [((0, 100, 120), (4, 255, 255)), ((170, 100, 120), (179, 255, 255))],
+    'green': [((55, 80, 100), (81, 255, 255))],
+    'blue': [((100, 100, 130), (125, 255, 255))],
+}
+DRAW = {'red': (0, 0, 255), 'green': (0, 200, 0), 'blue': (255, 80, 0)}   # BGR
+
+
+def mask_of(hsv, name):
+    mask = None
+    for lo, hi in COLOURS[name]:
+        part = cv2.inRange(hsv, np.array(lo), np.array(hi))
+        mask = part if mask is None else cv2.bitwise_or(mask, part)
+    return mask
+
+
+class CubeViewer(Node):
+    """Show the camera on the gripper with every coloured cube outlined and labelled."""
+
+    def __init__(self):
+        super().__init__('cube_viewer')
+        self.bridge = CvBridge()
+        self.create_subscription(Image, '/arm_camera/image_raw', self.on_image, 10)
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        for name in COLOURS:
+            contours, _ = cv2.findContours(mask_of(hsv, name), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for c in contours:
+                if cv2.contourArea(c) < 40:
+                    continue
+                x, y, w, h = cv2.boundingRect(c)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), DRAW[name], 2)
+                cv2.putText(frame, f'{name} {w}px', (x, max(12, y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, DRAW[name], 1)
+        cv2.imshow('arm camera', frame)
+        cv2.waitKey(1)
+` + PY_MAIN('CubeViewer') },
+      colours: { label: 'Which colours? (OpenCV)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from std_msgs.msg import String
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+# the Cube viewer's ranges, measured on this camera's picture
+COLOURS = {
+    'red': [((0, 100, 120), (4, 255, 255)), ((170, 100, 120), (179, 255, 255))],
+    'green': [((55, 80, 100), (81, 255, 255))],
+    'blue': [((100, 100, 130), (125, 255, 255))],
+}
+MIN_PIXELS = 60     # smaller blobs are noise or a cube too far away
+
+
+class WhichColours(Node):
+    """Say which cube colours are in the picture, on /cubes_seen."""
+
+    def __init__(self):
+        super().__init__('which_colours')
+        self.bridge = CvBridge()
+        self.pub = self.create_publisher(String, '/cubes_seen', 10)
+        self.create_subscription(Image, '/arm_camera/image_raw', self.on_image, 10)
+
+    def on_image(self, msg):
+        hsv = cv2.cvtColor(self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8'), cv2.COLOR_BGR2HSV)
+        seen = []
+        for name, ranges in COLOURS.items():
+            pixels = sum(cv2.countNonZero(cv2.inRange(hsv, np.array(lo), np.array(hi))) for lo, hi in ranges)
+            if pixels >= MIN_PIXELS:
+                seen.append(name)
+        if seen:
+            self.pub.publish(String(data=','.join(seen)))
+            self.get_logger().info('I see: ' + ', '.join(seen), throttle_duration_sec=1.0)
+` + PY_MAIN('WhichColours') },
+      centre: { label: 'Centre the red cube (visual servoing)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from snobots_msgs.msg import ArmCoords
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+RED = [((0, 100, 120), (4, 255, 255)), ((170, 100, 120), (179, 255, 255))]   # as in the Cube viewer
+GAIN = 0.6        # how much of the error to correct in each move
+CUBE_MM = 30.0    # the cube's real width turns pixels into millimetres
+
+
+class CentreCube(Node):
+    """Move the arm until the red cube sits in the middle of the picture (image-based visual servoing)."""
+
+    def __init__(self):
+        super().__init__('centre_cube')
+        self.bridge = CvBridge()
+        self.coords = None
+        self.last_move = 0.0
+        self.pub = self.create_publisher(ArmCoords, '/arm/coords_goal', 10)
+        self.create_subscription(ArmCoords, '/arm/coords', self.on_coords, 10)
+        self.create_subscription(Image, '/arm_camera/image_raw', self.on_image, 10)
+
+    def on_coords(self, msg):
+        self.coords = msg     # where the gripper is: x y z in mm, in arm_base
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = frame.shape[:2]
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = cv2.bitwise_or(*[cv2.inRange(hsv, np.array(lo), np.array(hi)) for lo, hi in RED])
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if self.coords is not None and contours:
+            x, y, bw, bh = cv2.boundingRect(max(contours, key=cv2.contourArea))
+            u, v = x + bw / 2 - w / 2, y + bh / 2 - h / 2     # pixels from the middle: right, down
+            mm = CUBE_MM / max(bw, bh)                          # millimetres per pixel at the cube
+            now = self.get_clock().now().nanoseconds / 1e9
+            if now - self.last_move > 0.5 and (abs(u) > 3 or abs(v) > 3):
+                goal = ArmCoords()
+                # gripper pointing down: the top of the picture is the arm's +x, its right is the arm's -y
+                goal.x = self.coords.x - GAIN * v * mm
+                goal.y = self.coords.y - GAIN * u * mm
+                goal.z = self.coords.z
+                goal.rx, goal.ry, goal.rz = 180.0, 0.0, 0.0
+                goal.speed = 40
+                self.pub.publish(goal)
+                self.last_move = now
+            cv2.rectangle(frame, (x, y), (x + bw, y + bh), (0, 255, 0), 2)
+        cv2.drawMarker(frame, (w // 2, h // 2), (255, 255, 255), cv2.MARKER_CROSS, 16, 1)
+        cv2.imshow('centre', frame)
+        cv2.waitKey(1)
+` + PY_MAIN('CentreCube') },
+      size: { label: 'How far down is it? (known size)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image, CameraInfo
+from geometry_msgs.msg import PointStamped
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+RED = [((0, 100, 120), (4, 255, 255)), ((170, 100, 120), (179, 255, 255))]   # as in the Cube viewer
+CUBE_M = 0.03     # the cube's real width, in metres
+
+
+class CubeDistance(Node):
+    """One camera has no depth, but a known size gives distance: z = fx * real width / width in pixels."""
+
+    def __init__(self):
+        super().__init__('cube_distance')
+        self.bridge = CvBridge()
+        self.K = None
+        self.pub = self.create_publisher(PointStamped, '/cube_point', 10)
+        self.create_subscription(CameraInfo, '/arm_camera/camera_info', self.on_info, 10)
+        self.create_subscription(Image, '/arm_camera/image_raw', self.on_image, 10)
+
+    def on_info(self, msg):
+        self.K = list(msg.k)      # [fx, 0, cx, 0, fy, cy, 0, 0, 1]
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = cv2.bitwise_or(*[cv2.inRange(hsv, np.array(lo), np.array(hi)) for lo, hi in RED])
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if self.K is None or not contours:
+            return
+        x, y, bw, bh = cv2.boundingRect(max(contours, key=cv2.contourArea))
+        if max(bw, bh) < 6:
+            return
+        fx, fy, cx, cy = self.K[0], self.K[4], self.K[2], self.K[5]
+        z = fx * CUBE_M / max(bw, bh)      # how far the top face is along the optical axis
+        u, v = x + bw / 2, y + bh / 2      # the top face's centre, in pixels
+        p = PointStamped()
+        p.header = msg.header              # the camera's frame and time
+        p.point.x = (u - cx) * z / fx      # right
+        p.point.y = (v - cy) * z / fy      # down
+        p.point.z = z                      # forward, out of the lens
+        self.pub.publish(p)
+        self.get_logger().info(f'red cube {z * 1000:.0f} mm from the camera ({max(bw, bh)} px wide)', throttle_duration_sec=1.0)
+` + PY_MAIN('CubeDistance') },
+      vpick: { label: 'Pick by sight (visual servoing)', vision: true, code: PY_HEAD + `from sensor_msgs.msg import Image
+from snobots_msgs.msg import ArmCoords
+from std_msgs.msg import Int32
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+RED = [((0, 100, 120), (4, 255, 255)), ((170, 100, 120), (179, 255, 255))]   # as in the Cube viewer
+FX = 200.0          # focal length in pixels (from /arm_camera/camera_info)
+CUBE_MM = 30.0
+CAM_AHEAD = 30.0    # the camera sits 30 mm ahead of the gripper (arm +x when it points down)
+CAM_ABOVE = 56.0    # ... and 56 mm above the gripper's grasp point
+
+
+class PickBySight(Node):
+    """Look down, centre the red cube under the camera, move the gripper over it, then grab it."""
+
+    def __init__(self):
+        super().__init__('pick_by_sight')
+        self.bridge = CvBridge()
+        self.coords, self.cube = None, None
+        self.state, self.t0, self.centred = 'look', 0.0, 0
+        self.arm = self.create_publisher(ArmCoords, '/arm/coords_goal', 10)
+        self.grip = self.create_publisher(Int32, '/arm/gripper', 10)
+        self.create_subscription(ArmCoords, '/arm/coords', self.on_coords, 10)
+        self.create_subscription(Image, '/arm_camera/image_raw', self.on_image, 10)
+        self.create_timer(0.1, self.step)
+
+    def now(self):
+        return self.get_clock().now().nanoseconds / 1e9
+
+    def go(self, state):
+        self.state, self.t0 = state, self.now()
+        self.get_logger().info(state)
+
+    def move(self, x, y, z, speed=40):
+        g = ArmCoords()
+        g.x, g.y, g.z, g.rx, g.ry, g.rz, g.speed = float(x), float(y), float(z), 180.0, 0.0, 0.0, speed
+        self.arm.publish(g)
+
+    def on_coords(self, msg):
+        self.coords = msg
+
+    def on_image(self, msg):
+        frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        h, w = frame.shape[:2]
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mask = cv2.bitwise_or(*[cv2.inRange(hsv, np.array(lo), np.array(hi)) for lo, hi in RED])
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        self.cube = None
+        if contours:
+            x, y, bw, bh = cv2.boundingRect(max(contours, key=cv2.contourArea))
+            if max(bw, bh) >= 6:
+                self.cube = (x + bw / 2 - w / 2, y + bh / 2 - h / 2, max(bw, bh))   # u, v from the middle, width
+                cv2.rectangle(frame, (x, y), (x + bw, y + bh), (0, 255, 0), 2)
+        cv2.imshow('pick by sight', frame)
+        cv2.waitKey(1)
+
+    def step(self):
+        c, t = self.coords, self.now() - self.t0
+        if c is None:
+            return
+        if self.state == 'look':                          # look down at the table
+            self.grip.publish(Int32(data=100))
+            self.move(150, 0, 120, 60)
+            self.go('find')
+        elif self.state == 'find' and t > 2.5:
+            self.go('centre' if self.cube else 'look')
+        elif self.state == 'centre' and t > 0.5 and self.cube:
+            u, v, width = self.cube
+            mm = CUBE_MM / width
+            if abs(u) < 4 and abs(v) < 4:
+                self.centred += 1
+                if self.centred >= 3:                     # steady in the middle: work out the height
+                    self.depth = FX * CUBE_MM / width     # mm from the camera to the cube's top
+                    self.move(c.x + CAM_AHEAD, c.y, c.z)  # put the gripper where the camera was looking
+                    self.go('over')
+            else:
+                self.centred = 0
+                self.move(c.x - 0.6 * v * mm, c.y - 0.6 * u * mm, c.z)
+                self.t0 = self.now()
+        elif self.state == 'over' and t > 1.5:
+            # the cube's middle is half a cube below its top: lower the grasp point there
+            self.move(c.x, c.y, c.z + CAM_ABOVE - self.depth - CUBE_MM / 2, 30)
+            self.go('down')
+        elif self.state == 'down' and t > 2.5:
+            self.grip.publish(Int32(data=0))
+            self.go('grip')
+        elif self.state == 'grip' and t > 1.2:
+            self.move(c.x, c.y, c.z + 120)
+            self.go('done')
+` + PY_MAIN('PickBySight') },
     },
   },
 };

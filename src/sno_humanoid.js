@@ -73,7 +73,10 @@ function huR1() {
   add({ name: 'head_pitch_joint', parent: 'neck_link', child: 'head_link', xyz: [0, 0, 0.035], axis: 'y', lo: -0.5, hi: 0.7 }, [
     { s: 'box', size: [0.12, 0.13, 0.11], xyz: [0, 0, 0.06], m: 'shell' }, { s: 'sph', size: [0.068], xyz: [-0.006, 0, 0.088], m: 'shell' },
     { s: 'box', size: [0.012, 0.112, 0.05], xyz: [0.058, 0, 0.066], m: 'glass' }, { s: 'sph', size: [0.0085], xyz: [0.0635, 0.028, 0.068], m: 'glow' }, { s: 'sph', size: [0.0085], xyz: [0.0635, -0.028, 0.068], m: 'glow' }], [1.0, [0, 0, 0.06]]);
+  // the binocular depth camera between the eyes; colour and depth come out registered to one optical frame
   add({ name: 'camera_joint', parent: 'head_link', child: 'camera_link', type: 'fixed', xyz: [0.066, 0, 0.068] });
+  add({ name: 'camera_optical_joint', parent: 'camera_link', child: 'camera_optical_frame', type: 'fixed', rpy: [-Math.PI / 2, 0, -Math.PI / 2] });
+  add({ name: 'imu_joint', parent: 'base_link', child: 'imu_link', type: 'fixed', xyz: [0, 0, 0] });
   return { root: 'base_link', joints: J, visuals: V, masses: M };
 }
 
@@ -99,7 +102,7 @@ function huAinexPhys() {
 }
 
 function huR1Phys() {
-  const coll = { base_link: [{ t: 'box', size: [0.14, 0.2, 0.12], xyz: [0, 0, 0] }], waist_yaw_link: false, neck_link: false, camera_link: false,
+  const coll = { base_link: [{ t: 'box', size: [0.14, 0.2, 0.12], xyz: [0, 0, 0] }], waist_yaw_link: false, neck_link: false, camera_link: false, camera_optical_frame: false, imu_link: false,
     torso_link: [{ t: 'box', size: [0.17, 0.25, 0.27], xyz: [-0.015, 0, 0.16] }], head_link: [{ t: 'sph', size: [0.07], xyz: [0, 0, 0.075] }] };
   for (const p of ['left_', 'right_']) Object.assign(coll, {
     [p + 'hip_pitch_link']: false, [p + 'hip_roll_link']: false, [p + 'ankle_pitch_link']: false, [p + 'sole_link']: false, [p + 'shoulder_pitch_link']: false, [p + 'shoulder_roll_link']: false,
@@ -526,8 +529,26 @@ class HumanoidSim extends SnoSim {
     const wb = K3.rot(K3.inv(T), w[0], w[1], w[2]), ab = K3.rot(K3.inv(T), a[0], a[1], a[2]), rn = () => n * (Math.random() * 2 - 1);
     this.pub(this.ctl, '/imu', 'sensor_msgs/msg/Imu', { header: { stamp: stampNow(), frame_id: 'imu_link' }, orientation: q, orientation_covariance: new Array(9).fill(0), angular_velocity: { x: +(wb[0] + rn() * 0.05).toFixed(4), y: +(wb[1] + rn() * 0.05).toFixed(4), z: +(wb[2] + rn() * 0.05).toFixed(4) }, angular_velocity_covariance: new Array(9).fill(0), linear_acceleration: { x: +(ab[0] + rn()).toFixed(3), y: +(ab[1] + rn()).toFixed(3), z: +(ab[2] + rn()).toFixed(3) }, linear_acceleration_covariance: new Array(9).fill(0) });
   }
-  frames() { return ['odom', ...this.kin.links]; }
-  lookup(a, b) { const T = this.kin.T, A = a === 'odom' ? K3.I() : T[a], B = b === 'odom' ? K3.I() : T[b]; return A && B ? K3.mul(K3.inv(A), B) : null; }
+  /* ---------- TF as published, for a robot that runs as processes (H.staticJoints): odom -> base_link from the
+     controller, the joints from robot_state_publisher (fed by /joint_states), fixed parts from /tf_static ---------- */
+  poseOf(f, d = 0) {
+    if (!f || d > 16) return null;
+    const ctl = !!this.procs.ctl;
+    if (f === 'odom') return ctl ? K3.I() : null;
+    if (f === this.kin.root) return ctl ? this.Tr : null;
+    const st = this.staticOf(f); if (st) { const P = this.poseOf(st.parent, d + 1); return P ? K3.mul(P, st.T) : null; }
+    this._sk = this._sk || new Set((this.H.staticJoints || []).map(n => this.kin.J[n].child));
+    return this.kin.T[f] && !this._sk.has(f) && this.procs.rsp && ctl ? this.kin.T[f] : null;
+  }
+  frames() {
+    if (!this.H.staticJoints) return ['odom', ...this.kin.links];
+    const out = new Set(['odom', ...this.kin.links]); this.tfStatic.forEach(m => m.forEach((v, c) => { out.add(c); out.add(v.parent); }));
+    return [...out].filter(f => this.poseOf(f));
+  }
+  lookup(a, b) {
+    if (!this.H.staticJoints) { const T = this.kin.T, A = a === 'odom' ? K3.I() : T[a], B = b === 'odom' ? K3.I() : T[b]; return A && B ? K3.mul(K3.inv(A), B) : null; }
+    const A = this.poseOf(a), B = this.poseOf(b); return A && B ? K3.mul(K3.inv(A), B) : null;
+  }
   modeLabel() { return { stand: 'Standing', walk: 'Walking', act: 'Action', manual: 'Posing (servo mode)', fall: 'Falling', fallen: 'Fallen', getup: 'Standing up (hoist)', damp: 'Damped', low: 'Low-level (gantry)' }[this.mode] || this.mode; }
   focusPos() { const T = this.Tr; return [T[3], T[7], Math.max(this.H.camZ, T[11] * 0.6)]; }
   focusYaw() { return this.nav.yaw; }
