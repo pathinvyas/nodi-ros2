@@ -221,7 +221,9 @@ class SnoView {
   // an onboard camera for sensor_msgs/Image: renders off screen at its own resolution, the way the robot sees the scene
   addCamera(link, o) {
     const T = this.T, cam = new T.PerspectiveCamera(o.vfov || 56, o.w / o.h, o.near || 0.02, o.far || 30);
-    cam.quaternion.setFromRotationMatrix(new T.Matrix4().makeBasis(new T.Vector3(0, -1, 0), new T.Vector3(0, 0, 1), new T.Vector3(-1, 0, 0))); cam.layers.set(0); link.add(cam);
+    // look 'z': a camera looking along its link's z axis (image up = link x), like a camera on a gripper
+    const M = o.look === 'z' ? new T.Matrix4().makeBasis(new T.Vector3(0, 1, 0), new T.Vector3(1, 0, 0), new T.Vector3(0, 0, -1)) : new T.Matrix4().makeBasis(new T.Vector3(0, -1, 0), new T.Vector3(0, 0, 1), new T.Vector3(-1, 0, 0));
+    cam.quaternion.setFromRotationMatrix(M); cam.layers.set(0); link.add(cam);
     const rt = new T.WebGLRenderTarget(o.w, o.h, { minFilter: T.LinearFilter, magFilter: T.LinearFilter, format: T.RGBAFormat, encoding: T.sRGBEncoding });
     const C = { cam, rt, w: o.w, h: o.h, px: new Uint8Array(o.w * o.h * 4) }; this.cams.push(C); return C;
   }
@@ -639,11 +641,12 @@ class SnoSim {
   // vision nodes: they subscribe like any node but need no pixels, so they don't make the camera render),
   // depth (optional, an RGB-D camera: { on(), dmin, dmax, noise }, depth aligned to the colour image) }.
   // The driver's start() sets this.tn.img and this.tn.info (after remapping), and this.tn.dimg / dinfo for depth.
-  camInfo(hd) {
-    const C = this.camCfg, f = C.f, cx = (C.w - 1) / 2, cy = (C.h - 1) / 2;
+  camInfo(hd, C = this.camCfg) {
+    const f = C.f, cx = (C.w - 1) / 2, cy = (C.h - 1) / 2;
     return { header: hd, height: C.h, width: C.w, distortion_model: 'plumb_bob', d: [0, 0, 0, 0, 0], k: [f, 0, cx, 0, f, cy, 0, 0, 1], r: [1, 0, 0, 0, 1, 0, 0, 0, 1], p: [f, 0, cx, 0, 0, f, cy, 0, 0, 0, 1, 0], binning_x: 0, binning_y: 0, roi: { x_offset: 0, y_offset: 0, height: 0, width: 0, do_rectify: false } };
   }
-  camTick() {
+  camTick() { this.camTick0(); (this.camExtra || []).forEach(C => this.camTickX(C)); }
+  camTick0() {
     const C = this.camCfg; if (!C || !this.procs[C.key] || !this.tn || !this.tn.info || !C.on()) return;
     const fps = clampN(+C.fps() || 10, 1, 30);
     if (this.camLast != null && this.t >= this.camLast && this.t - this.camLast < 1 / fps - 1e-6) return;
@@ -654,10 +657,32 @@ class SnoSim {
     this.camDue = hd;
     this.onCamFrame(hd);
   }
+  // more cameras (a robot with a second one sets camExtra): cfgs like camCfg plus tnImg / tnInfo, their keys in this.tn,
+  // and an optional tint(pixels) for what the camera's settings do to colour; each keeps its own timing and capture
+  camTickX(C) {
+    if (!this.procs[C.key] || !this.tn || !this.tn[C.tnInfo] || !C.on()) return;
+    const fps = clampN(+C.fps() || 10, 1, 30);
+    if (C.last != null && this.t >= C.last && this.t - C.last < 1 / fps - 1e-6) return;
+    C.last = this.t;
+    const hd = { stamp: stampNow(), frame_id: C.frame() };
+    this.pub(C.node, this.tn[C.tnInfo], 'sensor_msgs/msg/CameraInfo', this.camInfo(hd, C));
+    C.due = hd;
+    this.onCamFrame(hd, C);
+  }
   onCamFrame() { }
   camRunning() { return !!(this.camCfg && this.procs[this.camCfg.key]); }
+  // the camera that publishes this image topic (for the Vision tab)
+  camForTopic(t) { if (this.camCfg && this.tn && (t === this.tn.img || t === this.tn.dimg)) return this.camCfg; return (this.camExtra || []).find(C => this.tn && this.tn[C.tnImg] === t) || null; }
   camDepthOn() { const C = this.camCfg; return !!(C && C.depth && this.tn && this.tn.dimg && this.tn.dinfo && C.depth.on()); }
-  cameraFrame(view) {
+  cameraFrame(view) { this.cameraFrame0(view); (this.camExtra || []).forEach(C => this.cameraFrameX(view, C)); }
+  cameraFrameX(view, C) {
+    const hd = C.due; if (!hd) return; C.due = null;
+    const T = this.tn[C.tnImg] && this.bus.topics.get(this.tn[C.tnImg]);
+    if (!C.cap || !T || ![...T.subs.keys()].some(n => !(C.internal && C.internal.has(n)))) return;
+    const data = view.capture(C.cap); if (!data) return; if (C.tint) C.tint(data);
+    this.pub(C.node, this.tn[C.tnImg], 'sensor_msgs/msg/Image', { header: hd, height: C.h, width: C.w, encoding: 'rgb8', is_bigendian: 0, step: C.w * 3, data });
+  }
+  cameraFrame0(view) {
     const hd = this.camDue; if (!hd) return; this.camDue = null;
     const C = this.camCfg; if (!this.camCap) return;
     const wanted = (topic) => { const T = topic && this.bus.topics.get(topic); return !!T && [...T.subs.keys()].some(n => !(C.internal && C.internal.has(n))); };
@@ -669,9 +694,10 @@ class SnoSim {
   }
   // would this frame reach that subscriber? Same topic name and type, and QoS they can agree on (else DDS warns once).
   // which: 'img' for the colour image, 'dimg' for the depth image
-  camFeeds(node, which = 'img') {
-    const C = this.camCfg, B = this.bus, topic = this.tn && this.tn[which], IMG = 'sensor_msgs/msg/Image';
-    if (!C || !topic || !this.procs[C.key] || (which === 'dimg' && !this.camDepthOn())) return false;
+  // which: 'img' for the colour image, 'dimg' for the depth image; X: one of camExtra instead of the main camera
+  camFeeds(node, which = 'img', X = null) {
+    const C = X || this.camCfg, B = this.bus, topic = this.tn && this.tn[X ? X.tnImg : which], IMG = 'sensor_msgs/msg/Image';
+    if (!C || !topic || !this.procs[C.key] || (!X && which === 'dimg' && !this.camDepthOn())) return false;
     const T = B.topics.get(topic); if (!T || T.pubs.get(C.node) !== IMG || T.subs.get(node) !== IMG) return false;
     const bad = qosClash(T.pubQos.get(C.node), T.subQos.get(node)); if (bad) { B.clash(C.node, node, topic, bad); return false; }
     return true;

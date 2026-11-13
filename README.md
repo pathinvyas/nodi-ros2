@@ -14,7 +14,7 @@ A game-like ROS 2 course that runs entirely in the browser, in a single web page
 |---|---|
 | **Learn** | 12 units, 26 lessons and 153 exercises on ROS 2 Jazzy: the command line, publishers and subscribers, services, custom interfaces, parameters, launch files and TF2, in Python and C++, ending with a driver node for a microcontroller. Lessons are short animated scenes followed by a mix of exercise types (multiple choice, fill in the code, spot the bug, order the steps, drive the turtle). |
 | **Robot Lab** | A 2D robot with a live ROS 2 graph. Use `ros2 topic echo`, `ros2 param set` and friends in the terminal, or write Python nodes with an rclpy-style API. Python runs in your browser through Pyodide. |
-| **SnoBots Robots** | Physics simulators of a Hiwonder AiNex (24-joint small humanoid), a Unitree R1 (humanoid), an AgileX LIMO (four wheel modes) and a LIMO Cobot (LIMO with a 6-axis arm). Each has missions, a terminal, a Python code tab and a live topic graph. LIMO, AiNex and R1 also have **broken-robot missions** (tickets where the robot starts with a fault that you fix with `ros2` commands) and a **Vision lab** (a simulated camera, with depth on R1, and OpenCV in Python). |
+| **SnoBots Robots** | Physics simulators of a Hiwonder AiNex (24-joint small humanoid), a Unitree R1 (humanoid), an AgileX LIMO (four wheel modes) and a LIMO Cobot (LIMO with a 6-axis arm). Each has missions, a terminal, a Python code tab and a live topic graph, plus **broken-robot missions** (tickets where the robot starts with a fault that you fix with `ros2` commands) and a **Vision lab** (a simulated camera, with depth on R1 and on the gripper of the Cobot, and OpenCV in Python). |
 | **Library** | Books and guides to read inside the app. It has a PDF reader with search (every match highlighted on the page, plus a results list), a contents panel, zoom, selectable text and a saved place in every book. Readers can also open their own PDFs, which stay in their browser. |
 | **Practice, Notebook, Profile** | Review rounds, unit notes, XP, streaks and badges. Progress is saved in the browser. |
 
@@ -41,7 +41,7 @@ Honest limits: the real Unitree R1 walks with a learned (reinforcement-learning)
 
 ## Broken-robot missions
 
-LIMO, AiNex and R1 each have a **Fix it** tab with seven tickets. Each one restarts the robot with a real fault in its ROS graph and a bug report from a teammate. There is no button that fixes it: you find the cause and fix it in the terminal, as you would on a real robot.
+LIMO, AiNex, R1 and the LIMO Cobot each have a **Fix it** tab with seven tickets. Each one restarts the robot with a real fault in its ROS graph and a bug report from a teammate. There is no button that fixes it: you find the cause and fix it in the terminal, as you would on a real robot.
 
 ![A Fix it ticket: SLAM gets no scans because of a QoS mismatch](docs/screenshots/limo-fix-it.jpg)
 
@@ -79,15 +79,27 @@ R1's tickets are about its state machine, its RGB-D head camera and its follow-m
 | The visitor is a kilometre away | `depth_scale` 1.0 reads millimetres as metres | depth encodings (`16UC1`, `32FC1`), units |
 | A frame went missing | an old robot description without `camera_optical_frame` | optical frames, `static_transform_publisher` with a rotation |
 
+The Cobot's tickets are about its arm and the camera on its gripper. Its bringup adds three nodes to LIMO's: the arm driver, a `usb_cam` driver for the gripper camera and a cube detector, which places each cube it sees in `arm_base` from its width in pixels. The pick & place demo parks at the table, looks down, takes the cube's position from the detector and picks it up.
+
+| Ticket | The fault | What you practise |
+|---|---|---|
+| The arm won't move | the arm driver crashed at start-up (the arm was switched off, so there was no `/dev/ttyACM0`) | `ros2 node list`, `ros2 topic info`, `ros2 run` |
+| The arm is floppy | the servos were released for drag teaching and never powered again | the driver's log, `ros2 service call` with `std_srvs/SetBool` |
+| Butterfingers | a reversed-gripper setting left over from the old gripper, so "open" closes it | hardware parameters, testing a part on its own |
+| Where did red go? | the camera's white balance is fixed at 2800 K, so the picture is blue and red looks purple | the Vision tab's HSV readout, read-only camera parameters, `--ros-args -p` |
+| The arm vanished from TF | the arm's joint states are remapped to `/arm/joint_states`, so `robot_state_publisher` never hears them | `tf2_echo`, `/joint_states`, `topic_tools relay` |
+| Out of reach? | the driver reads goals in `base_link`, but the demo sends them in `arm_base` | coordinate frames, `tf2_echo`, IK limits |
+| Two metres under the table | the detector assumes 30 cm foam cubes, so every distance is ten times too long | distance from a known size, units |
+
 This works because the simulated graph follows the same rules as ROS 2: the robot's own nodes are processes you can stop and start again with `--ros-args -r … -p …`, a parameter of the wrong type crashes a node, publishers and subscriptions with incompatible QoS never connect (and warn once, like DDS discovery), latched `/tf_static` keeps each publisher's transforms, and the TF tree only contains frames that someone is actually publishing. A ticket checks the live simulation, so any fix that really works counts. Hints cost XP.
 
 ## The Vision lab
 
-LIMO, AiNex and R1 each have a camera, published the way a ROS 2 camera driver publishes it, and the Python tab runs OpenCV. R1's camera also measures depth. The **Vision** tab is a small image viewer: pick any `sensor_msgs/Image` topic, then click a pixel (or use the arrow keys) to read its BGR and OpenCV HSV values, which are the numbers `cv2.inRange` needs.
+All four robots have a camera, published the way a ROS 2 camera driver publishes it, and the Python tab runs OpenCV. R1's camera also measures depth, and the Cobot has a second camera on its gripper. The **Vision** tab is a small image viewer: pick any `sensor_msgs/Image` topic, then click a pixel (or use the arrow keys) to read its BGR and OpenCV HSV values, which are the numbers `cv2.inRange` needs.
 
 - **OpenCV in Python.** `import cv2` loads OpenCV 4.10 (with the `aruco` module) and NumPy into Pyodide. The first run downloads about 15 MB, and the browser caches it after that. `cv_bridge.CvBridge` converts images both ways (`rgb8`, `bgr8`, `mono8`, `16UC1`, `32FC1` and more), and `cv2.imshow` opens a small window over the 3D view (`cv2.waitKey` returns -1, as it does with no key pressed).
 - **Lazy cameras.** A camera renders the 3D scene from its pose in the TF tree, stamped on the sim clock, but only while a node wants the pixels, so `ros2 topic hz` and `ros2 topic bw` start it like any other subscriber. All are ideal pinholes: `camera_info` has the real intrinsics `K` and no distortion.
-- **Checked from the world.** Like the Fix it tickets, the missions check the true state of the world (where the robot and the ball really are), and only count when your node is in charge.
+- **Checked from the world.** Like the Fix it tickets, the missions check the true state of the world (where the robot, the ball or the cube really are), and only count when your node is in charge.
 
 ### LIMO
 
@@ -130,6 +142,20 @@ R1's binocular depth camera is simplified to one registered pair: `/head_camera/
 | Eyes on the visitor | turn the head to keep the strolling visitor in the middle of the picture | head tracker |
 | Follow me | walk after the strolling visitor and stay 0.7 to 1.4 m away from them | follow the visitor |
 | A point in 3D | turn the vest's pixel and depth into a point with `K` and publish it on `/visitor_point` | where is the visitor? (3D) |
+
+### LIMO Cobot
+
+![The Cobot centred over the red cube, with the cube viewer's cv2.imshow window over the 3D view and the gripper camera in the Vision tab with a pixel read in HSV](docs/screenshots/cobot-vision.jpg)
+
+The camera on the gripper is a `usb_cam` driver, `/arm_camera`: `/arm_camera/image_raw` (320×240 `rgb8`, 15 Hz) and `/arm_camera/camera_info` (fx = fy = 200, no distortion), in `arm_camera_optical_frame`, 30 mm beside the gripper and looking along it. With the gripper pointing down, the top of the picture is the arm's +x and its right is the arm's −y. Park at a cube with the Drive tab's buttons and press **Look down** in the Arm tab to see it from above; your node moves the arm with `/arm/coords_goal` (millimetres, in `arm_base`). One camera has no depth, but the cubes are 30 mm wide, so distance comes from size: z = fx × width ÷ width in pixels. The robot's own cube detector does exactly this and publishes `snobots_msgs/CubeDetection` on `/cube_detections`. The starter code's colour ranges were measured on the rendered picture, where a lit top looks paler than its paint, and they leave out the rest of the view from above: LIMO's dark-blue deck, its cyan lights and the lidar's orange ring.
+
+| Mission | What you do | Starter code |
+|---|---|---|
+| Camera check | measure the gripper camera's rate with `ros2 topic hz` and read its `camera_info` | |
+| Which colours? | name the cube colours in the picture on `/cubes_seen`, right 10 times | which colours? |
+| Centre it | move the arm until the red cube sits in the middle of the picture for 2 s (image-based visual servoing) | centre the red cube |
+| How far down? | place the red cube's top face from its width in pixels, and publish it on `/cube_point` in the camera's frame | how far down is it? |
+| Pick by sight | find the red cube, centre it, move the gripper over it and pick it up, with the camera alone | pick by sight |
 
 ## The Library
 
@@ -174,6 +200,7 @@ npm test
 - `tests/vision.test.js` checks LIMO's camera and vision missions: `camera_info` matches the field of view, the optical frame points z forward, images are only rendered while someone subscribes, the ArUco codes match OpenCV's, the pixel picker's HSV matches `cv2.cvtColor`, the starter thresholds catch the right colours, and each mission counts only when your node does the job.
 - `tests/ainex_lab.test.js` checks AiNex as a ROS graph: its bringup, a TF tree that only holds published frames, and a camera that renders only for real subscribers while still feeding the robot's own vision nodes. It opens all seven AiNex tickets and fixes each one the usual ways (including the wrong bridge that a ticket must catch), and checks the five vision missions, the starter colour thresholds and the tag codes.
 - `tests/r1_lab.test.js` does the same for R1: its bringup, the optical frame, colour and depth `camera_info`, a depth image rendered only for real subscribers, the person locator and follow me, the strolling visitor, all seven R1 tickets with their usual fixes (and a bridge without the optical rotation that must be caught), and the five vision missions with the starter vest thresholds.
+- `tests/cobot_lab.test.js` does the same for the LIMO Cobot: its bringup, arm frames that exist only while its joint states reach `robot_state_publisher`, a gripper camera that renders only for real subscribers, the cube detector's accuracy, released servos, the demo picking by sight, all seven Cobot tickets with their usual fixes, and the five vision missions (one with odometry drift) with starter colour ranges checked against the rendered picture.
 - `tests/robots.test.js` drives the four robots:
   - AiNex stands, walks, turns, kicks, catches a push and is stood back up after a hard one
   - R1 walks at 0.4 m/s, collapses in damping mode and holds a joint in low-level PD mode
@@ -200,7 +227,7 @@ src/
   sno_core.js       SnoBots 3D view, panels, physics tools
   sno_humanoid.js   humanoid models and simulator
   sno_robots.js     AiNex and R1: bringup, cameras, vision nodes, the visitor and missions
-  sno_car.js        LIMO and LIMO Cobot
+  sno_car.js        LIMO and LIMO Cobot: bringup, the arm driver, the gripper camera, the cube detector and the demo
   sno_defs.js       robot definitions, missions, code templates
   sno_fix.js        broken-robot missions (Fix it tickets)
   sno_vision.js     Vision tab: image viewer, pixel picker, cv2.imshow windows

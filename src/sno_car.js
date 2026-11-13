@@ -137,6 +137,11 @@ function limoDesc(o = {}) {
 const COBOT_DH = [[0, 0, 0.13122, 0], [Math.PI / 2, 0, 0, -Math.PI / 2], [0, -0.1104, 0, 0], [0, -0.096, 0.0634, -Math.PI / 2], [Math.PI / 2, 0, 0.07505, Math.PI / 2], [-Math.PI / 2, 0, 0.0456, 0]];
 const COBOT_LIM = [168, 135, 150, 145, 165, 175];
 const COBOT_J = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'];
+// the camera on the gripper (an eye-in-hand USB camera): 320x240 at 15 Hz, about 62° tall and 77° wide. It looks along
+// the gripper from 30 mm beside it, with the top of the picture toward that side (gripper_base +x)
+const COBOT_CAM = { w: 320, h: 240, f: 200, vfov: 2 * Math.atan(120 / 200) / D2R, near: 0.01, far: 4, look: 'z' };
+const COBOT_MOVING = new Set(['link1', 'link2', 'link3', 'link4', 'link5', 'link6', 'finger_left', 'finger_right']);
+const COBOT_CUBE = 0.03;
 function cobotDesc() {
   const d = limoDesc({ cobot: true }), J = d.joints, V = d.visuals;
   J.push({ name: 'arm_mount', parent: 'base_link', child: 'arm_base', type: 'fixed', xyz: [0.02, 0, 0.122] });
@@ -160,6 +165,7 @@ function cobotDesc() {
   V.finger_left = [{ s: 'box', size: [0.014, 0.006, 0.048], xyz: [0, 0.003, 0.024], m: 'grey' }]; V.finger_right = [{ s: 'box', size: [0.014, 0.006, 0.048], xyz: [0, -0.003, 0.024], m: 'grey' }];
   J.push({ name: 'tcp_joint', parent: 'gripper_base', child: 'tcp', type: 'fixed', xyz: [0, 0, 0.068] });
   J.push({ name: 'arm_camera_joint', parent: 'gripper_base', child: 'arm_camera', type: 'fixed', xyz: [0.03, 0, 0.012] });
+  J.push({ name: 'arm_camera_optical_joint', parent: 'arm_camera', child: 'arm_camera_optical_frame', type: 'fixed', rpy: [0, 0, Math.PI / 2] });
   V.gripper_base.push({ s: 'box', size: [0.018, 0.03, 0.02], xyz: [0.03, 0, 0.008], m: 'glass' });
   return d;
 }
@@ -172,7 +178,7 @@ function limoPhys(cobot) {
   LIMO_WHEELS.forEach(w => { coll[w + '_steering_link'] = false; coll[w + '_wheel_link'] = [{ t: 'wheel', size: [D.wr, D.ww / 2], rpy: [-Math.PI / 2, 0, 0], tag: 'wheel', mu: 0.9 }]; masses[w + '_wheel_link'] = [0.16, [0, 0, 0]]; masses[w + '_steering_link'] = [0.05, [0, 0, 0]]; });
   if (cobot) {
     Object.assign(masses, { arm_base: [0.16, [0, 0, 0.04]], link1: [0.12, [0, 0, 0]], link2: [0.12, [-0.055, 0, 0]], link3: [0.1, [-0.048, 0, 0]], link4: [0.08, [0, 0, 0]], link5: [0.06, [0, 0, 0]], link6: [0.05, [0, 0, 0]], gripper_base: [0.08, [0, 0, 0.017]], finger_left: [0.012, [0, 0.003, 0.024]], finger_right: [0.012, [0, -0.003, 0.024]] });
-    Object.assign(coll, { tcp: false, arm_camera: false, link1: false, link6: false, arm_base: false,
+    Object.assign(coll, { tcp: false, arm_camera: false, arm_camera_optical_frame: false, link1: false, link6: false, arm_base: false,
       finger_left: [{ t: 'box', size: [0.014, 0.006, 0.048], xyz: [0, 0.003, 0.024], tag: 'finger', mu: 1.0 }], finger_right: [{ t: 'box', size: [0.014, 0.006, 0.048], xyz: [0, -0.003, 0.024], tag: 'finger', mu: 1.0 }] });
   }
   const armT = [3, 3, 2.5, 1.2, 1.2, 0.8];
@@ -300,7 +306,7 @@ class LimoSim extends SnoSim {
     ['nav', 'lane'].forEach(k => { if (this.beh[k]) this.setBeh(k, false); });
     [...B.nodes.keys()].filter(n => n === '/teleop_panel' || n === '/goal_tool' || /^\/(static_transform_publisher_|relay)/.test(n)).forEach(n => B.removeNode(n));
     this._tele = null; this.keys = {}; this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' }; this.warnT = {}; this.lastWarn = ''; B.clashes.clear();
-    this.launchProcs(['rsp', 'laser_tf', 'base', 'lidar', 'camera'].concat(cfg.slam ? ['slam'] : []), cfg);
+    this.launchProcs(['rsp', 'laser_tf', 'base', 'lidar', 'camera'].concat(cfg.slam ? ['slam'] : [], this.extraProcs ? this.extraProcs() : []), cfg);
     if (cfg.joy) { const st = cfg.joy === 'stamped'; this.node('/teleop_panel', 'teleop', [['publish_stamped_twist', st, 'bool']]); B.advertise('/teleop_panel', '/cmd_vel', st ? 'geometry_msgs/msg/TwistStamped' : 'geometry_msgs/msg/Twist'); }
     if (SnoUI.cur === this) SnoUI.refreshTab('control');
   }
@@ -872,7 +878,8 @@ class CobotSim extends LimoSim {
     this.armChain = this.kin.chain('arm_base', 'tcp');
   }
   resetExtra() {
-    this.arm = { q: [0, 0, 0, 0, 0, 0], from: null, to: null, t: 0, dur: 0, g: 100, gt: 100, speed: 50 };
+    this.arm = { q: [0, 0, 0, 0, 0, 0], from: null, to: null, t: 0, dur: 0, g: 100, gt: 100, speed: 50, free: false };
+    this.vst = { hz: false, info: false, seen: 0, centre: 0, pts: 0, userArmT: -9, userMoveT: -9 }; this.demoSeen = {};
     const home = this.armHomeQ();
     this.arm.q = home.slice();
     if (!this.cubes) this.cubes = this.A.cubes.map(([c, x]) => { const sys = physBox('cube', [0.03, 0.03, 0.03], 0.02, { mu: 0.8 }); this.world.add(sys); return { color: c, x0: x, sys }; });
@@ -884,21 +891,139 @@ class CobotSim extends LimoSim {
   }
   armQ() { return COBOT_J.map(n => this.rb.q[this.rb.ji[n]]); }
   armHomeQ() { return [0, 30, -130, 10, 0, 0].map(v => v * D2R); }
-  setupExtra() {
-    const n = '/arm_driver';
-    this.node(n, 'driver', [['speed', 50, 'integer', [1, 100]]]);
-    this.bus.advertise(n, '/joint_states', 'sensor_msgs/msg/JointState'); this.bus.advertise(n, '/arm/angles', 'snobots_msgs/msg/ArmAngles'); this.bus.advertise(n, '/arm/coords', 'snobots_msgs/msg/ArmCoords');
-    this.bus.subscribe(n, '/arm/angles_goal', 'snobots_msgs/msg/ArmAngles', (m, from) => { const r = this.sendAngles((m.angles || []).map(Number), +m.speed || this.P(n, 'speed')); if (!r.ok) this.lastWarn = r.reason; this.armEvent('angles', from); });
-    this.bus.subscribe(n, '/arm/coords_goal', 'snobots_msgs/msg/ArmCoords', (m, from) => { const r = this.sendCoords([+m.x, +m.y, +m.z, +m.rx, +m.ry, +m.rz], +m.speed || this.P(n, 'speed')); if (!r.ok) this.lastWarn = r.reason; this.armEvent('coords', from); });
-    this.bus.subscribe(n, '/arm/gripper', 'std_msgs/msg/Int32', (m, from) => { this.setGripper(+m.data); this.armEvent('gripper', from); });
-    this.bus.service('/arm/go_home', 'std_srvs/srv/Trigger', n, () => { this.sendAngles(this.armHomeQ().map(v => v / D2R), 60); this.event('service', '/arm/go_home'); return { success: true, message: 'moving to home pose' }; });
+  /* ---- ROS: the arm's software runs as processes too: its driver, the camera on the gripper, a cube detector ---- */
+  staticJoints() { return super.staticJoints().concat(['gripper_mount', 'tcp_joint', 'arm_camera_joint', 'arm_camera_optical_joint']); }
+  extraProcs() { return ['arm', 'armcam', 'det']; }
+  pkgs() { return Object.assign(super.pkgs(), { cobot_driver: ['arm_driver_node'], usb_cam: ['usb_cam_node_exe'], cobot_vision: ['cube_detector'] }); }
+  setupRos() {
+    super.setupRos();
+    const B = this.bus, prev = B.onPublish;
+    B.onPublish = (node, topic, type, msg) => {
+      prev(node, topic, type, msg);
+      // robot_state_publisher makes the arm's frames only from arm joint positions that reach /joint_states
+      if (topic === '/joint_states' && msg && Array.isArray(msg.name) && msg.name.includes('joint1')) this.armJsT = this.t;
+      if (topic === '/cubes_seen' && type === 'std_msgs/msg/String' && msg) this.seenMsg(String(msg.data || ''), node);
+      if (topic === '/cube_point' && type === 'geometry_msgs/msg/PointStamped' && msg) this.cubePointMsg(msg, node);
+    };
+  }
+  // the camera on the gripper is a second camera: rendered only for subscribers that want pixels, like the front one
+  armCamCfg() {
+    if (this._acam) return this._acam;
+    const c = '/arm_camera';
+    this._acam = { key: 'armcam', node: c, w: COBOT_CAM.w, h: COBOT_CAM.h, f: COBOT_CAM.f, fps: () => this.P(c, 'framerate'), on: () => true, frame: () => String(this.P(c, 'frame_id') || ''), internal: new Set(['/cube_detector']), tnImg: 'aimg', tnInfo: 'ainfo', tint: (px) => this.camTint(px) };
+    this.camExtra = [this._acam]; return this._acam;
+  }
+  // cfg keys beyond LIMO's: servosOff releases the arm's servos, demo starts the pick & place demo, park: a cube's colour
+  restoreRobot(cfg = {}) {
+    if (this.demo) this.setDemo(false);
+    super.restoreRobot(cfg);
+    if (cfg.servosOff) this.setServos(false);
+    if (cfg.park) { const g = this.parkPose(cfg.park); this.teleport(g[0], g[1], g[2]); }
+    if (cfg.demo) this.setDemo(true);
+  }
+  procDefs() {
+    if (this._pdc) return this._pdc;
+    const B = this.bus, TF = 'tf2_msgs/msg/TFMessage', IMG = 'sensor_msgs/msg/Image', INFO = 'sensor_msgs/msg/CameraInfo', latched = { dur: 'TRANSIENT_LOCAL', depth: 1 };
+    return (this._pdc = Object.assign({}, super.procDefs(), {
+      // talks to the arm's controller over USB serial, like pymycobot does
+      arm: { pkg: 'cobot_driver', exe: 'arm_driver_node', node: '/arm_driver', kind: 'driver',
+        params: () => [['port', '/dev/ttyACM0', 'string', null, true], ['baud', 115200, 'integer', null, true], ['speed', 50, 'integer', [1, 100]], ['gripper_reversed', false, 'bool'], ['reference_frame', 'arm_base', 'string']],
+        check: (k, v) => k === 'reference_frame' && !['arm_base', 'base_link'].includes(String(v)) ? 'reference_frame must be arm_base or base_link' : '',
+        crash: 'could not open /dev/ttyACM0: No such file or directory. Is the arm switched on and plugged in?',
+        start: (rec) => this.armStart(rec),
+        stop: () => { this.tn.ajs = this.tn.aang = this.tn.acrd = null; } },
+      // usb_cam for the camera on the gripper; its settings are read once at start-up, so they are read-only here
+      armcam: { pkg: 'usb_cam', exe: 'usb_cam_node_exe', node: '/arm_camera', kind: 'driver',
+        params: () => [['video_device', '/dev/video0', 'string', null, true], ['image_width', COBOT_CAM.w, 'integer', null, true], ['image_height', COBOT_CAM.h, 'integer', null, true], ['framerate', 15.0, 'double', [1, 30], true], ['pixel_format', 'yuyv', 'string', null, true], ['camera_name', 'arm_camera', 'string', null, true], ['frame_id', 'arm_camera_optical_frame', 'string', null, true], ['auto_white_balance', true, 'bool', null, true], ['white_balance_temperature', 4600, 'integer', [2800, 6500], true]],
+        check: (k, v) => (k === 'image_width' && v !== COBOT_CAM.w) || (k === 'image_height' && v !== COBOT_CAM.h) ? `${k}: the simulated camera streams ${COBOT_CAM.w}x${COBOT_CAM.h} only` : '',
+        crash: "Cannot identify '/dev/video0': 2, No such file or directory",
+        start: (rec) => {
+          const c = '/arm_camera', R = rec.R, C = this.armCamCfg(); this.tn.aimg = R('/arm_camera/image_raw'); this.tn.ainfo = R('/arm_camera/camera_info'); C.last = null; C.due = null;
+          B.advertise(c, this.tn.aimg, IMG); B.advertise(c, this.tn.ainfo, INFO);
+          this.log(c, 'INFO', `camera_name value: ${this.P(c, 'camera_name')}`);
+          this.log(c, 'INFO', `Starting '${this.P(c, 'camera_name')}' (${this.P(c, 'video_device')}) at ${COBOT_CAM.w}x${COBOT_CAM.h} via mmap (${this.P(c, 'pixel_format')}) at ${this.P(c, 'framerate')} FPS`);
+          this.log(c, 'INFO', this.P(c, 'auto_white_balance') === false ? `auto white balance off: white_balance_temperature ${this.P(c, 'white_balance_temperature')} K` : 'auto white balance on');
+        },
+        stop: () => { this.tn.aimg = this.tn.ainfo = null; this.armCamCfg().due = null; } },
+      // finds the coloured cubes in the picture; one camera has no depth, so it gets distance from a cube's known size
+      det: { pkg: 'cobot_vision', exe: 'cube_detector', node: '/cube_detector', kind: 'vision',
+        params: () => [['cube_size', COBOT_CUBE, 'double', [0.005, 1]], ['target_frame', 'arm_base', 'string'], ['min_pixels', 40, 'integer', [1, 10000]]],
+        start: (rec) => {
+          const d = '/cube_detector', R = rec.R; this.tn.cubes = R('/cube_detections'); this._dseen = null; this.detT0 = this.t;
+          rec.un.push(B.subscribe(d, R('/arm_camera/image_raw'), IMG, (m) => this.detIn(m.header)), B.subscribe(d, R('/arm_camera/camera_info'), INFO, () => {}), B.subscribe(d, '/tf', TF, () => {}), B.subscribe(d, '/tf_static', TF, () => {}, latched));
+          B.advertise(d, this.tn.cubes, 'snobots_msgs/msg/CubeDetection');
+          this.log(d, 'INFO', `looking for red, green and blue cubes in ${R('/arm_camera/image_raw')}`);
+          this.log(d, 'INFO', `distance from size: cubes are ${this.P(d, 'cube_size')} m wide; publishing ${this.tn.cubes} in ${this.P(d, 'target_frame')}`);
+        },
+        stop: () => { this.tn.cubes = null; } },
+    }));
+  }
+  armStart(rec) {
+    const n = '/arm_driver', B = this.bus, R = rec.R;
+    this.tn.ajs = R('/joint_states'); this.tn.aang = R('/arm/angles'); this.tn.acrd = R('/arm/coords');
+    B.advertise(n, this.tn.ajs, 'sensor_msgs/msg/JointState'); B.advertise(n, this.tn.aang, 'snobots_msgs/msg/ArmAngles'); B.advertise(n, this.tn.acrd, 'snobots_msgs/msg/ArmCoords');
+    const free = () => { if (!this.arm.free) return false; this.warnEvery('arm_free', 3, n, 'The servos are released (free mode, for teaching by hand), so goals are ignored. Power them on with /arm/servos.'); return true; };
+    rec.un.push(
+      B.subscribe(n, R('/arm/angles_goal'), 'snobots_msgs/msg/ArmAngles', (m, from) => { if (free()) return; const r = this.sendAngles((m.angles || []).map(Number), +m.speed || this.P(n, 'speed')); if (!r.ok) this.armWarn(r.reason); this.armEvent('angles', from); }),
+      B.subscribe(n, R('/arm/coords_goal'), 'snobots_msgs/msg/ArmCoords', (m, from) => {
+        if (free()) return;
+        let c = [+m.x, +m.y, +m.z, +m.rx, +m.ry, +m.rz];
+        // goals given in base_link are moved into arm_base, the frame the arm works in
+        if (this.P(n, 'reference_frame') === 'base_link') { const o = this.kin.J.arm_mount.O; c = [c[0] - o[3] * 1000, c[1] - o[7] * 1000, c[2] - o[11] * 1000, c[3], c[4], c[5]]; }
+        const r = this.sendCoords(c, +m.speed || this.P(n, 'speed')); if (!r.ok) this.armWarn(r.reason); this.armEvent('coords', from);
+      }),
+      B.subscribe(n, R('/arm/gripper'), 'std_msgs/msg/Int32', (m, from) => { if (free()) return; const v = clampN(+m.data || 0, 0, 100); this.setGripper(this.P(n, 'gripper_reversed') ? 100 - v : v); this.armEvent('gripper', from); }));
+    B.service('/arm/go_home', 'std_srvs/srv/Trigger', n, () => { if (this.arm.free) return { success: false, message: 'the servos are released: power them on with /arm/servos first' }; this.sendAngles(this.armHomeQ().map(v => v / D2R), 60); this.event('service', '/arm/go_home'); return { success: true, message: 'moving to home pose' }; });
+    B.service('/arm/servos', 'std_srvs/srv/SetBool', n, (rq) => { const on = !!rq.data; this.setServos(on); this.event('service', '/arm/servos'); return { success: true, message: on ? 'servos powered: holding the current pose' : 'servos released: you can move the arm by hand' }; });
+    this.log(n, 'INFO', `connected to the arm on ${this.P(n, 'port')} at ${this.P(n, 'baud')} baud: 6 joint servos and the gripper answered`);
+    this.log(n, 'INFO', `servos ${this.arm.free ? 'released (free mode)' : 'powered'}; goals on ${R('/arm/angles_goal')} and ${R('/arm/coords_goal')} (coords in ${this.P(n, 'reference_frame')})`);
+  }
+  armWarn(t) { this.lastWarn = t; if (this.procs.arm) this.log('/arm_driver', 'WARN', t); }
+  // released servos (free mode) let the arm fall where gravity takes it; powered again, they hold wherever it is
+  setServos(on) { if (on && this.arm.free) { this.arm.q = this.armQ(); this.arm.to = null; } this.arm.free = !on; }
+  // TF for the arm's moving links needs robot_state_publisher and the arm's joint positions on /joint_states
+  poseOf(f, d = 0) {
+    if (COBOT_MOVING.has(f) && !(this.procs.rsp && this.t - (this.armJsT == null ? -9 : this.armJsT) < 0.5)) return null;
+    return super.poseOf(f, d);
+  }
+  /* ---- /cube_detector, fed frame by frame by the camera on the gripper ---- */
+  onCamFrame(hd, C) { if (C && C === this._acam && this.procs.det && this.camFeeds('/cube_detector', 'img', C)) this.detIn(hd); }
+  detIn(hd) { if (!hd || this._dseen === hd) return; this._dseen = hd; this.detectTick(hd); }
+  // the white balance setting against the light (about 5000 K): positive turns the picture blue, negative orange
+  wbShift() { const c = '/arm_camera'; if (!this.procs.armcam || this.P(c, 'auto_white_balance') !== false) return 0; return clampN((5000 - (+this.P(c, 'white_balance_temperature') || 5000)) / 2200, -1, 1); }
+  camTint(px) {
+    const t = this.wbShift(); if (Math.abs(t) < 0.05) return;
+    const gr = 1 - 0.38 * t, gg = 1 - 0.15 * t, gb = 1 + 0.45 * t;
+    for (let i = 0; i < px.length; i += 3) { px[i] = Math.min(255, px[i] * gr); px[i + 1] = Math.min(255, px[i + 1] * gg); px[i + 2] = Math.min(255, px[i + 2] * gb); }
+  }
+  // a cube's top face in the camera's picture: [u, v] in [-1, 1] (x right, y down), its depth and its width in pixels
+  cubeView(c) {
+    const To = this.kin.T.arm_camera_optical_frame, C = COBOT_CAM; if (!To || !c || c.held) return null;
+    const p = K3.apply(K3.inv(To), c.x, c.y, c.z + COBOT_CUBE / 2); if (p[2] < 0.03) return null;
+    const u = p[0] / p[2] * C.f / (C.w / 2), v = p[1] / p[2] * C.f / (C.h / 2);
+    return Math.abs(u) < 0.95 && Math.abs(v) < 0.95 ? [u, v, p[2], C.f * COBOT_CUBE / p[2], p] : null;
+  }
+  detectTick(hd) {
+    const n = '/cube_detector'; if (!this.tn.cubes) return;
+    const s = +this.P(n, 'cube_size'), tgt = String(this.P(n, 'target_frame') || 'arm_base'), minPx = +this.P(n, 'min_pixels') || 40, M = this.lookup(tgt, hd.frame_id);
+    if (!M) { if (this.t - this.detT0 < 1) return; const miss = !this.poseOf(hd.frame_id) ? hd.frame_id : tgt; this.warnEvery('det_tf', 3, n, `Could not transform from '${hd.frame_id || '(empty)'}' to '${tgt}': "${miss || '(empty)'}" passed to lookupTransform argument ${miss === hd.frame_id ? 'source_frame' : 'target_frame'} does not exist. `); return; }
+    const cast = Math.abs(this.wbShift()) > 0.5, Tt = tgt === 'odom' ? K3.I() : this.kin.T[tgt];
+    for (const c of this.cubes) {
+      const v = this.cubeView(c); if (!v || v[3] * v[3] < minPx) continue;
+      if (cast && c.color !== 'blue') continue;   // under a colour cast, red and green no longer pass their colour tests
+      const p = v[4], z = COBOT_CAM.f * s / v[3];   // the distance that width means, for a cube s metres wide
+      const P = K3.apply(M, p[0] / p[2] * z, p[1] / p[2] * z, z); P[2] -= s / 2;   // half a cube below its top face
+      const q4 = Math.PI / 2, rel = Tt ? wrapPi(c.yaw - Math.atan2(Tt[4], Tt[0])) : 0, yaw = ((rel + q4 / 2) % q4 + q4) % q4 - q4 / 2;   // a cube looks the same every 90°
+      this.pub(n, this.tn.cubes, 'snobots_msgs/msg/CubeDetection', { header: { stamp: hd.stamp, frame_id: tgt }, color: c.color, position: { x: +P[0].toFixed(4), y: +P[1].toFixed(4), z: +P[2].toFixed(4) }, yaw: +yaw.toFixed(4), size_px: +v[3].toFixed(1) });
+      if (this.fix && Tt) { const st = this.fix.stats, w = K3.apply(Tt, P[0], P[1], P[2]), ok = Math.hypot(w[0] - c.x, w[1] - c.y, w[2] - c.z) < 0.01; st.det++; if (ok) { st.detOk++; if (c.color === 'red') st.detRed++; } }
+    }
   }
   runExe(T, pkg, exe) {
-    if (exe === 'go_home') { this.sendAngles(this.armHomeQ().map(v => v / D2R), 60); this.event('service', '/arm/go_home'); return T.print('[INFO] [go_home]: folding the arm'); }
+    if (exe === 'go_home') { const sv = this.bus.services.get('/arm/go_home'); if (!sv) return T.print('[ERROR] [go_home]: service /arm/go_home is not available: is the arm driver running?', 'e'); const r = sv.handler({}); return T.print(r.success ? '[INFO] [go_home]: folding the arm' : `[WARN] [go_home]: ${r.message}`, r.success ? '' : 'w'); }
     if (exe === 'open_gripper' || exe === 'close_gripper') { this.panelPub('/arm/gripper', 'std_msgs/msg/Int32', { data: exe === 'open_gripper' ? 100 : 0 }); return T.print(`[INFO] [${exe}]: done`); }
     T.print('This executable is not simulated here.', 'w');
   }
-  armEvent(kind, from) { const nd = this.bus.nodes.get(from), k = nd ? (nd.user ? 'user' : nd.kind) : ''; if (k === 'cli' && kind === 'angles') this.complete('m4'); if (k === 'user') { this.userArm = (this.userArm || 0) + 1; if (this.userArm >= 3) this.complete('m8'); } }
+  armEvent(kind, from) { const nd = this.bus.nodes.get(from), k = nd ? (nd.user ? 'user' : nd.kind) : ''; if (k === 'user' && this.vst) { this.vst.userArmT = this.t; if (kind !== 'gripper') this.vst.userMoveT = this.t; } if (k === 'cli' && kind === 'angles') this.complete('m4'); if (k === 'user') { this.userArm = (this.userArm || 0) + 1; if (this.userArm >= 3) this.complete('m8'); } }
   behaviors() { const b = super.behaviors(); b['pick_place.launch.py'] = { label: 'pick & place demo', nodes: ['/pick_place_demo'], on: () => !!this.demo, set: (on) => this.setDemo(on), hello: '[pick_place_demo-1] [INFO] sorting cubes: drive to the table, pick, drive to the matching bin, place' }; return b; }
   /* ---- arm motion: joint-space interpolation, like send_angles(angles, speed) ---- */
   sendAngles(deg, speed) {
@@ -934,8 +1059,9 @@ class CobotSim extends LimoSim {
   stepExtra(dt) {
     const A = this.arm, rb = this.rb;
     if (A.to) { A.t += dt; const u = ease01(A.t / A.dur); A.q = A.from.map((v, i) => lerpN(v, A.to[i], u)); if (A.t >= A.dur) { A.q = A.to.slice(); A.to = null; this.event('arm_done'); } }
-    // joint servos follow the trajectory; the arm controller adds gravity compensation from its model
-    COBOT_J.forEach((n, i) => { const k = rb.ji[n]; rb.mode[k] = 1; rb.qt[k] = A.q[i]; rb.tff[k] = rb.bias[6 + k]; });
+    // joint servos follow the trajectory; the arm controller adds gravity compensation from its model. Released, they go limp
+    if (A.free) { A.to = null; A.q = this.armQ(); COBOT_J.forEach(n => { const k = rb.ji[n]; rb.mode[k] = 0; rb.tff[k] = 0; }); }
+    else COBOT_J.forEach((n, i) => { const k = rb.ji[n]; rb.mode[k] = 1; rb.qt[k] = A.q[i]; rb.tff[k] = rb.bias[6 + k]; });
     let gmin = 0; if (this.held) gmin = (0.03 - 0.008) / 0.04 * 100 - 1;
     A.g = approach(A.g, Math.max(A.gt, gmin), 160 * dt);
     const o = A.g / 100 * 0.02; ['gripper_left', 'gripper_right'].forEach(n => { const k = rb.ji[n]; rb.mode[k] = 1; rb.qt[k] = o; });
@@ -952,7 +1078,8 @@ class CobotSim extends LimoSim {
         if (c.held) continue;
         const l = K3.apply(K3.inv(Tg), c.x, c.y, c.z); if (Math.abs(l[0]) > 0.02 || Math.abs(l[1]) > 0.012 || l[2] < 0.03 || l[2] > 0.075) continue;
         let fl = false, fr = false; for (let i = 0; i < this.world.nc; i++) { const k = this.world.C[i], o = k.a.s === c.sys ? k.b : k.b.s === c.sys ? k.a : null; if (!o || k.fn < 0.2) continue; if (o.link === 'finger_left') fl = true; if (o.link === 'finger_right') fr = true; }
-        if ((fl && fr) || open < 0.031) {
+        // both fingers squeeze it, or they have closed to its width (a gripper closed on top of a cube holds nothing)
+        if ((fl && fr) || (open < 0.031 && open > 0.022)) {
           this.held = c; c.held = true; c.placed = null; c.rel = K3.mul(K3.inv(Tg), c.sys.T[0]); c.sys.off = true;
           const lc = [c.rel[3], c.rel[7], c.rel[11]], m = c.sys.totalMass, I = m * 0.03 * 0.03 / 6;
           rb.setPayload(gb, m, K3.apply(rb.linkOff.gripper_base, ...lc), [I, 0, 0, 0, I, 0, 0, 0, I]); Sound.play('tap'); this.event('grasp', c); this.complete('m5'); break;
@@ -974,18 +1101,18 @@ class CobotSim extends LimoSim {
     }
   }
   publishExtra(dt) {
-    const n = '/arm_driver';
-    if (this.every('ajs', dt, 0.05)) { const names = [...COBOT_J, 'gripper'], rb = this.rb, q = Object.assign({}, this.qObj(this.armQ()), { gripper: +(0.008 + 2 * rb.q[rb.ji.gripper_left]).toFixed(4) }), m = this.jointStateMsg(names, q); m.effort = names.map(nm => +(rb.tau[rb.ji[nm === 'gripper' ? 'gripper_left' : nm]] || 0).toFixed(3)); this.pub(n, '/joint_states', 'sensor_msgs/msg/JointState', m); }
+    const n = '/arm_driver'; if (!this.procs.arm) return;
+    if (this.every('ajs', dt, 0.05)) { const names = [...COBOT_J, 'gripper'], rb = this.rb, q = Object.assign({}, this.qObj(this.armQ()), { gripper: +(0.008 + 2 * rb.q[rb.ji.gripper_left]).toFixed(4) }), m = this.jointStateMsg(names, q); m.effort = names.map(nm => +(rb.tau[rb.ji[nm === 'gripper' ? 'gripper_left' : nm]] || 0).toFixed(3)); this.pub(n, this.tn.ajs, 'sensor_msgs/msg/JointState', m); }
     if (this.every('aang', dt, 0.1)) {
-      this.pub(n, '/arm/angles', 'snobots_msgs/msg/ArmAngles', { angles: this.armQ().map(v => +(v / D2R).toFixed(2)), speed: this.arm.to ? this.arm.speed : 0 });
-      const c = this.coords(); this.pub(n, '/arm/coords', 'snobots_msgs/msg/ArmCoords', { x: c[0], y: c[1], z: c[2], rx: c[3], ry: c[4], rz: c[5], speed: 0 });
+      this.pub(n, this.tn.aang, 'snobots_msgs/msg/ArmAngles', { angles: this.armQ().map(v => +(v / D2R).toFixed(2)), speed: this.arm.to ? this.arm.speed : 0 });
+      const c = this.coords(); this.pub(n, this.tn.acrd, 'snobots_msgs/msg/ArmCoords', { x: c[0], y: c[1], z: c[2], rx: c[3], ry: c[4], rz: c[5], speed: 0 });
     }
   }
   coords() { const T = this.kin.T, M = K3.mul(K3.inv(T.arm_base), T.tcp), e = K3.rpy(M); return [M[3] * 1000, M[7] * 1000, M[11] * 1000, e[0] / D2R, e[1] / D2R, e[2] / D2R].map(v => +v.toFixed(1)); }
   /* ---- scripted pick & place (a node on the graph) ---- */
   setDemo(on) {
     if (!!this.demo === on) return;
-    if (on) { this.demo = { st: 'next', t: 0 }; this.bus.addNode('/pick_place_demo', 'behavior'); ['/arm/angles_goal', 'snobots_msgs/msg/ArmAngles', '/arm/coords_goal', 'snobots_msgs/msg/ArmCoords', '/arm/gripper', 'std_msgs/msg/Int32', '/goal_pose', 'geometry_msgs/msg/PoseStamped'].forEach((x, i, a) => { if (i % 2 === 0) this.bus.advertise('/pick_place_demo', x, a[i + 1]); }); if (!this.beh.nav) this.setBeh('nav', true); }
+    if (on) { this.demo = { st: 'next', t: 0 }; this.demoSeen = {}; this.bus.addNode('/pick_place_demo', 'behavior'); this.bus.subscribe('/pick_place_demo', '/cube_detections', 'snobots_msgs/msg/CubeDetection', (m) => this.demoSaw(m)); ['/arm/angles_goal', 'snobots_msgs/msg/ArmAngles', '/arm/coords_goal', 'snobots_msgs/msg/ArmCoords', '/arm/gripper', 'std_msgs/msg/Int32', '/goal_pose', 'geometry_msgs/msg/PoseStamped'].forEach((x, i, a) => { if (i % 2 === 0) this.bus.advertise('/pick_place_demo', x, a[i + 1]); }); if (!this.beh.nav) this.setBeh('nav', true); }
     else { this.demo = null; this.bus.removeNode('/pick_place_demo'); }
     SnoUI.refreshTab('control'); this.event('behavior', { k: 'demo', on });
   }
@@ -1001,10 +1128,16 @@ class CobotSim extends LimoSim {
       case 'next': { const c = this.cubes.find(k => !k.held && k.placed !== k.color); if (!c) { this.demoLog('all cubes sorted'); this.setDemo(false); return; } d.c = c; this.demoPub('/arm/angles_goal', 'snobots_msgs/msg/ArmAngles', { angles: this.armHomeQ().map(v => +(v / D2R).toFixed(1)), speed: 60 }); this.demoPub('/arm/gripper', 'std_msgs/msg/Int32', { data: 100 });
         const onTable = c.y > A.tableY - 0.02, yaw = onTable ? Math.PI / 2 : Math.atan2(c.y - this.y, c.x - this.x);
         const reach = 0.21 + mount; const gx = onTable ? c.x - mount * 0 : c.x - Math.cos(yaw) * reach, gy = onTable ? A.tableY - (LIMO_DIM.L / 2 + 0.01) : c.y - Math.sin(yaw) * reach; d.gx = gx; d.gy = gy; d.gyaw = yaw;
+        // already parked there: no need to drive
+        if (Math.hypot(this.x - gx, this.y - gy) < 0.03 && Math.abs(wrapPi(this.th - yaw)) < 0.05) { d.p = null; go(onTable ? 'look' : 'above'); break; }
         this.demoGoal(+gx.toFixed(3), +gy.toFixed(3), yaw); go('drive_pick'); break; }
-      case 'drive_pick': if (this.navState === 'arrived' && Math.abs(this.vx) < 0.01) go('above'); else if (this.navState === 'no_path' && d.t > 1) { this.demoLog('no path to the cube'); this.setDemo(false); } break;
-      case 'above': if (busy || d.t < 0.3) break; { const p = this.armLocal(d.c.x, d.c.y, d.c.z + 0.06); this.demoArm([p[0], p[1], p[2], Math.atan2(p[1], p[0]) / D2R]); go('descend'); } break;
-      case 'descend': if (busy || d.t < 0.2) break; { const p = this.armLocal(d.c.x, d.c.y, d.c.z); this.demoArm([p[0], p[1], p[2], Math.atan2(p[1], p[0]) / D2R], 30); go('grip'); } break;
+      case 'drive_pick': if (this.navState === 'arrived' && Math.abs(this.vx) < 0.01) { d.p = null; go(d.c.y > A.tableY - 0.02 ? 'look' : 'above'); } else if (this.navState === 'no_path' && d.t > 1) { this.demoLog('no path to the cube'); this.setDemo(false); } break;
+      // on the table: look down with the camera and reach for where /cube_detections says the cube is
+      case 'look': if (d.t < 0.3) break; this.demoPub('/arm/gripper', 'std_msgs/msg/Int32', { data: 100 }); this.demoArm([150, 0, 120, 0], 60); go('find'); break;
+      case 'find': { if (busy || d.t < 0.6) break; const sn = this.demoSeen[d.c.color]; if (sn && this.t - sn.t < 0.5) { d.p = sn.p; go('above'); break; } if (d.t > 4) { this.demoLog(`no ${d.c.color} cube in view on /cube_detections, looking again`); go('look'); } break; }
+      case 'above': if (busy || d.t < 0.3) break; { const p = d.p ? [d.p[0], d.p[1], d.p[2] + 60] : this.armLocal(d.c.x, d.c.y, d.c.z + 0.06); this.demoArm([p[0], p[1], p[2], Math.atan2(p[1], p[0]) / D2R]); go('descend'); } break;
+      // it reads the gripper's opening back (from /joint_states) and won't lower a closed gripper onto a cube
+      case 'descend': if (busy || d.t < 0.2) break; if (this.arm.g < 60) { this.demoLog(`the gripper did not open (${Math.round(this.arm.g)} %), so it is not lowered onto the cube; trying again`); d.p = null; go('look'); break; } { const p = d.p || this.armLocal(d.c.x, d.c.y, d.c.z); this.demoArm([p[0], p[1], p[2], Math.atan2(p[1], p[0]) / D2R], 30); go('grip'); } break;
       case 'grip': if (busy || d.t < 0.2) break; this.demoPub('/arm/gripper', 'std_msgs/msg/Int32', { data: 0 }); go('lift'); break;
       case 'lift': if (d.t < 0.8) break; if (this.held !== d.c) { this.demoLog('missed the cube, retrying'); go('next'); break; } this.demoPub('/arm/angles_goal', 'snobots_msgs/msg/ArmAngles', { angles: [0, -20, -90, -40, 0, 0], speed: 50 }); go('to_bin'); break;
       case 'to_bin': if (busy) break; { const b = A.boxes.find(x => x.bin === d.c.color), by = (b.y0 + b.y1) / 2, gx = b.x0 - (LIMO_DIM.L / 2 + 0.01); this.demoGoal(+gx.toFixed(3), +by.toFixed(3), 0); d.bin = b; go('drive_bin'); } break;
@@ -1014,12 +1147,47 @@ class CobotSim extends LimoSim {
       case 'home': if (d.t < 0.7) break; this.demoPub('/arm/angles_goal', 'snobots_msgs/msg/ArmAngles', { angles: this.armHomeQ().map(v => +(v / D2R).toFixed(1)), speed: 60 }); go('next'); break;
     }
   }
-  demoLog(t) { this.lastWarn = 'pick_place_demo: ' + t; }
-  missionTick() {
-    const s = this.st;
-    if (s.userDist >= 1) this.complete('m8');
+  demoLog(t) { this.lastWarn = 'pick_place_demo: ' + t; this.warnEvery('demo:' + t.slice(0, 12), 6, '/pick_place_demo', t); }
+  demoSaw(m) {
+    const fr = (m.header && m.header.frame_id) || 'arm_base', M = fr === 'arm_base' ? K3.I() : this.lookup('arm_base', fr); if (!M || !m.position) return;
+    const p = K3.apply(M, +m.position.x || 0, +m.position.y || 0, +m.position.z || 0);
+    this.demoSeen[String(m.color)] = { p: p.map(v => +(v * 1000).toFixed(1)), t: this.t };
   }
+  // where navigation parks LIMO facing the table, a cube straight ahead of the arm
+  parkPose(color) { const c = this.cubes.find(k => k.color === color) || this.cubes[0]; return [c.x0, this.A.tableY - (LIMO_DIM.L / 2 + 0.01), Math.PI / 2]; }
+  parkAt(color) { const g = this.parkPose(color); this.exactGoal = true; this.sendGoal(g[0], g[1], g[2]); }
+  missionTick(dt) {
+    const s = this.st, V = this.vst;
+    if (s.userDist >= 1) this.complete('m8');
+    // v3: the red cube in the middle of the picture, held there by your node moving the arm
+    const r = this.cubeView(this.cubes.find(c => c.color === 'red'));
+    if (r && Math.abs(r[0]) < 0.1 && Math.abs(r[1]) < 0.1 && this.t - V.userMoveT < 2 && this.procs.armcam) { V.centre += dt; if (V.centre >= 2) this.complete('v3'); }
+  }
+  // v2: the colours your node says it sees, against the cubes really in the picture
+  seenMsg(text, node) {
+    const nd = this.bus.nodes.get(node); if (!nd || !nd.user || !this.procs.armcam) return;
+    const said = [...new Set((text.toLowerCase().match(/red|green|blue/g) || []))].sort().join(), real = this.cubes.filter(c => { const v = this.cubeView(c); return v && v[3] >= 8; }).map(c => c.color).sort().join();
+    if (real && said === real) { this.vst.seen++; if (this.vst.seen >= 10) this.complete('v2'); }
+  }
+  // v4: the red cube's top face, placed by your node from its size in pixels. Judged from the camera: the point goes
+  // through TF into the camera's frame and is compared with where the top face really is from there, so odometry drift
+  // (which moves odom, not the robot) cannot spoil a right answer given in any frame.
+  cubePointMsg(m, node) {
+    const nd = this.bus.nodes.get(node); if (!nd || !nd.user || !m.point) return;
+    const v = this.cubeView(this.cubes.find(k => k.color === 'red')), M = this.lookup('arm_camera_optical_frame', (m.header && m.header.frame_id) || ''); if (!M || !v) return;
+    const q = K3.apply(M, +m.point.x || 0, +m.point.y || 0, +m.point.z || 0), p = v[4];
+    if (Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]) <= 0.015) { this.vst.pts++; if (this.vst.pts >= 10) this.complete('v4'); }
+  }
+  fixStats0() { return { det: 0, detOk: 0, detRed: 0, grasp: 0 }; }
   event(type, data) {
+    const V = this.vst;
+    if (type === 'grasp') { if (this.fix && this.demo) this.fix.stats.grasp++; if (!this.demo && data && data.color === 'red' && this.t - V.userArmT < 3) this.complete('v5'); }
+    if (type === 'cmd' && typeof data === 'string') {
+      const k = data.indexOf(':'), verb = data.slice(0, k), name = data.slice(k + 1);
+      if ((verb === 'hz' || verb === 'bw') && name === this.tn.aimg) V.hz = true;
+      if (verb === 'echo' && name === this.tn.ainfo) V.info = true;
+      if (V.hz && V.info) this.complete('v1');
+    }
     if (type === 'service' && data === '/arm/go_home') this.complete('m3');
     if (type === 'placed') { if (data.bin === data.cube.color) this.complete('m6'); if (this.cubes.every(c => c.placed === c.color)) this.complete('m7'); }
   }
@@ -1027,7 +1195,8 @@ class CobotSim extends LimoSim {
   buildExtra(view, T) {
     const mats = view.mats;
     this.cubeMesh = this.cubes.map(c => { const m = snoMesh(T, { s: 'box', size: [0.03, 0.03, 0.03], m: c.color, round: 0.002 }, mats); m.userData.obj = c; view.world.add(m); return m; });
-    view.addPip(this.model.links.arm_camera, { label: 'arm camera', vfov: 62, near: 0.01, far: 3, look: 'z' });
+    view.addPip(this.model.links.arm_camera, { label: 'arm camera', vfov: COBOT_CAM.vfov, near: 0.01, far: 3, look: 'z' });
+    this.armCamCfg().cap = view.addCamera(this.model.links.arm_camera, COBOT_CAM);
     view.pipIdx = 1;
   }
   syncExtra() { if (!this.cubeMesh) return; this.cubeMesh.forEach((m, i) => { const c = this.cubes[i], M = c.M || c.sys.T[0], q = K3.quat(M); m.position.set(M[3], M[7], M[11]); m.quaternion.set(q.x, q.y, q.z, q.w); }); }
@@ -1040,7 +1209,10 @@ class CobotSim extends LimoSim {
   }
   hudExtra() { const c = this.coords(); return `<span>TCP ${c[0].toFixed(0)}, ${c[1].toFixed(0)}, ${c[2].toFixed(0)} mm</span><span>gripper ${Math.round((this.rb.q[this.rb.ji.gripper_left] / 0.02) * 100)}${this.held ? ' · holding ' + this.held.color : ''}</span><span>sorted ${this.cubes.filter(c => c.placed === c.color).length}/3</span>`; }
   controlExtra(w) {
-    w.append(snoSwitch('Pick & place demo', !!this.demo, (on) => this.setDemo(on), 'Node <code>/pick_place_demo</code> sorts every cube into the bin of the same colour.'));
+    w.append(snoSwitch('Pick & place demo', !!this.demo, (on) => this.setDemo(on), 'Node <code>/pick_place_demo</code> finds each cube with the camera on the gripper (<code>/cube_detections</code>) and sorts it into the bin of the same colour.'));
+    const row = h('div', { class: 'row-btns', style: 'margin-top:10px' });
+    ['red', 'green', 'blue'].forEach(k => { const b = h('button', { class: 'btn btn-sm', html: `Park at ${k}` }); b.addEventListener('click', () => this.parkAt(k)); row.append(b); });
+    w.append(h('h4', { html: 'At the table <span>navigation parks LIMO in front of a cube</span>' }), row);
   }
   tabArm(body) {
     const w = h('div', { class: 'lpad sno-arm' });
@@ -1053,7 +1225,7 @@ class CobotSim extends LimoSim {
     g.append(gr); w.append(g);
     const jog = h('div', { class: 'jog' });
     jog.innerHTML = `<h4>Cartesian jog <span>gripper pointing down · like <code>send_coords</code></span></h4><div class="jog-grid">${[['x', '+'], ['x', '-'], ['y', '+'], ['y', '-'], ['z', '+'], ['z', '-']].map(([a, s]) => `<button class="btn btn-sm" data-ax="${a}" data-s="${s}">${a.toUpperCase()}${s === '+' ? '+' : '−'} 2 cm</button>`).join('')}</div>
-      <div class="row-btns"><button class="btn btn-sm" data-p="home">${icon('replay')}Home</button><button class="btn btn-sm" data-p="ready">Ready to pick</button><button class="btn btn-sm" data-p="zero">All zero (up)</button><button class="btn btn-sm btn-good" data-p="pick">Pick nearest cube</button></div>`;
+      <div class="row-btns"><button class="btn btn-sm" data-p="home">${icon('replay')}Home</button><button class="btn btn-sm" data-p="ready">Ready to pick</button><button class="btn btn-sm" data-p="look">Look down</button><button class="btn btn-sm" data-p="zero">All zero (up)</button><button class="btn btn-sm btn-good" data-p="pick">Pick nearest cube</button></div>`;
     $$('[data-ax]', jog).forEach(b => b.addEventListener('click', () => {
       const c = this.coords(), d = b.dataset.s === '+' ? 20 : -20, ax = { x: 0, y: 1, z: 2 }[b.dataset.ax]; const t = [c[0], c[1], c[2]]; t[ax] += d;
       const yaw = Math.atan2(t[1], t[0]) / D2R; this.panelPub('/arm/coords_goal', 'snobots_msgs/msg/ArmCoords', { x: t[0], y: t[1], z: t[2], rx: 180, ry: 0, rz: yaw, speed: 60 }); this.event('arm_ui');
@@ -1063,6 +1235,7 @@ class CobotSim extends LimoSim {
       if (p === 'home') this.panelPub('/arm/angles_goal', 'snobots_msgs/msg/ArmAngles', { angles: this.armHomeQ().map(v => +(v / D2R).toFixed(1)), speed: 60 });
       if (p === 'zero') this.panelPub('/arm/angles_goal', 'snobots_msgs/msg/ArmAngles', { angles: [0, 0, 0, 0, 0, 0], speed: 50 });
       if (p === 'ready') this.panelPub('/arm/coords_goal', 'snobots_msgs/msg/ArmCoords', { x: 200, y: 0, z: 60, rx: 180, ry: 0, rz: 0, speed: 60 });
+      if (p === 'look') this.panelPub('/arm/coords_goal', 'snobots_msgs/msg/ArmCoords', { x: 150, y: 0, z: 120, rx: 180, ry: 0, rz: 0, speed: 60 });
       if (p === 'pick') { const c = this.cubes.filter(k => !k.held).map(k => ({ k, p: this.armLocal(k.x, k.y, k.z) })).sort((a, b2) => Math.hypot(...a.p) - Math.hypot(...b2.p))[0]; if (!c) return; const r = Math.hypot(c.p[0], c.p[1]); if (r > 300) { toast(`The nearest cube is ${Math.round(r)} mm away. Drive closer (the arm reaches about 280 mm).`, { mood: 'think' }); return; } this.panelPub('/arm/gripper', 'std_msgs/msg/Int32', { data: 100 }); this.panelPub('/arm/coords_goal', 'snobots_msgs/msg/ArmCoords', { x: c.p[0], y: c.p[1], z: c.p[2] + 15, rx: 180, ry: 0, rz: Math.atan2(c.p[1], c.p[0]) / D2R, speed: 40 }); if (this.lastWarn && this.lastWarn.startsWith('no IK')) toast(esc(this.lastWarn), { mood: 'think' }); else toast('Arm moving above the cube. Now close the gripper (slider) to grab it.', { mood: 'happy', ms: 3000 }); }
     }));
     w.append(jog, h('div', { class: 'twist-readout arm-read' }));

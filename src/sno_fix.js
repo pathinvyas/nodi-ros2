@@ -2,7 +2,7 @@
 // Each ticket starts the robot with a real fault in its ROS graph: a crashed driver, a bad parameter, a leftover remap,
 // mismatched QoS, a missing transform, a wrong frame_id or the wrong message type. You find the cause and fix it from
 // the terminal with ros2 commands, the way you would on a real robot. A ticket's setup is the robot's start-up
-// configuration (see LimoSim.restoreRobot, AinexSim.restoreRobot and R1Sim.restoreRobot); its check reads the live simulation, so any fix
+// configuration (see LimoSim.restoreRobot, AinexSim.restoreRobot, R1Sim.restoreRobot and CobotSim.restoreRobot); its check reads the live simulation, so any fix
 // that works, counts.
 const FIX_TICKETS = {
   limo: [
@@ -219,6 +219,78 @@ const FIX_TICKETS = {
       hints: ["Read the locator's warning in the robot log, then look at the tree: `ros2 run tf2_ros tf2_echo camera_link camera_optical_frame`", 'From `camera_link` (x forward, y left, z up) to the optical frame (z forward, x right, y down) is a pure rotation, with no offset. Which turn about x, then about z, takes one to the other?', 'Publish it: `ros2 run tf2_ros static_transform_publisher --roll -1.5708 --yaw -1.5708 --frame-id camera_link --child-frame-id camera_optical_frame`'],
       fix: 'ros2 run tf2_ros static_transform_publisher --roll -1.5708 --yaw -1.5708 --frame-id camera_link --child-frame-id camera_optical_frame',
       debrief: "Last year's description had no `camera_optical_frame`, so the locator could not move image points into `base_link`. Cameras get two frames on purpose: `camera_link` follows the robot convention (x forward, y left, z up, REP 103) and the optical frame follows the image (z forward, x right, y down). The fixed rotation between them is a roll of −90° and then a yaw of −90°. Leave it out, or get it wrong, and every 3D point from the camera lands in the wrong place, often in the floor or the ceiling. Keep the optical joint in the URDF, so robot_state_publisher sends it with the rest.",
+    },
+  ],
+  cobot: [
+    {
+      id: 'arm-down', title: "The arm won't move", level: 1, xp: 40, skills: ['nodes', 'topics'], from: 'Lena',
+      report: "The sliders in the Arm tab do nothing, and the pick & place demo just sits at the table. The arm was still switched off when we started the robot this morning.",
+      goal: 'Get the arm driver running so the demo can pick up a cube.',
+      setup: () => ({ arm: false, died: 'arm', demo: true, park: 'red' }),
+      check: (sim, st) => ({ items: [['`/arm/angles` has a publisher', fixPubs(sim, '/arm/angles') > 0], ['The demo picks up a cube', st.grasp >= 1]] }),
+      hints: ['Who listens to the arm goals? `ros2 topic info /arm/angles_goal`', 'Is the arm driver running? `ros2 node list`, then read the robot log in the Fix it tab: what happened to `arm_driver_node`?', 'The arm is on now, so start the driver again: `ros2 run cobot_driver arm_driver_node`. It keeps running in that terminal.'],
+      fix: 'ros2 run cobot_driver arm_driver_node',
+      debrief: "The arm driver died at start-up because the arm was still switched off: it could not open its serial port, `/dev/ttyACM0`. Nothing else crashed, so the rest of the robot looked healthy, but nobody was listening to the arm's goals, and without the arm's joint positions even its TF frames were missing. Switch the hardware on before its driver starts, or let the launch file retry a driver that fails (`respawn=True`).",
+    },
+    {
+      id: 'limp', title: 'The arm is floppy', level: 1, xp: 40, skills: ['services'], from: 'Omar',
+      report: "After yesterday's drag-teaching lesson the arm flopped down onto the robot, and it won't hold any pose. The Arm tab and the demo are both ignored.",
+      goal: 'Power the arm again so the demo can pick up a cube.',
+      setup: () => ({ servosOff: true, demo: true, park: 'red' }),
+      check: (sim, st) => ({ items: [['The arm\'s servos are powered', !sim.arm.free], ['The demo picks up a cube', st.grasp >= 1]] }),
+      hints: ["Read the arm driver's warning in the robot log.", 'Which services does the arm driver offer? `ros2 service list`, then `ros2 service type /arm/servos` and `ros2 interface show std_srvs/srv/SetBool`', 'Power the servos: `ros2 service call /arm/servos std_srvs/srv/SetBool "{data: true}"`'],
+      fix: 'ros2 service call /arm/servos std_srvs/srv/SetBool "{data: true}"',
+      debrief: "Drag teaching releases the servos so you can move the arm by hand, and nobody powered them again. The driver was running and its topics looked fine, but it ignored every goal and said why in the log. A service is the right way to change a robot's state: you ask, and you get an answer back. On a real arm, hold it before you power the servos: the moment they come on, they hold the arm wherever it is.",
+    },
+    {
+      id: 'gripper', title: 'Butterfingers', level: 2, xp: 60, skills: ['parameters', 'hardware'], from: 'Hana',
+      report: "The demo drives to the table and finds the cube, then stops above it: it says the gripper did not open. We fitted the gripper from the old arm last week.",
+      goal: 'Make the gripper open and close the right way round, so the demo picks up a cube.',
+      setup: () => ({ arm: { params: { gripper_reversed: true } }, demo: true, park: 'red' }),
+      check: (sim, st) => ({ items: [['The demo picks up a cube', st.grasp >= 1]] }),
+      hints: ['Watch the gripper while the demo runs, and read its log line. Then try it yourself: `ros2 topic pub --once /arm/gripper std_msgs/msg/Int32 "{data: 100}"`. Does it open?', 'The arm driver has settings for the hardware: `ros2 param list /arm_driver`, then `ros2 param get` the gripper one.', 'This gripper is not reversed: `ros2 param set /arm_driver gripper_reversed false`'],
+      fix: 'ros2 param set /arm_driver gripper_reversed false',
+      debrief: "The old gripper's motor turned the other way, so the driver had been set to reverse it, and the setting stayed when the gripper was swapped: 100 (open) closed it and 0 (closed) opened it. The demo checks the gripper's opening on `/joint_states` before it lowers it, so it stopped instead of knocking the cube over. Settings that describe hardware go with the hardware: when you swap a part, check them, and test the part on its own (open, close) before a whole demo depends on it.",
+    },
+    {
+      id: 'white-balance', title: 'Where did red go?', level: 2, xp: 70, skills: ['parameters', 'cameras'], from: 'Yuki',
+      report: "The demo looks down at the red cube and then says there is no red cube in view. In the Vision tab the whole picture looks blue. Someone set up the camera by hand for the warm stage lights at last week's show.",
+      goal: 'Give the camera natural colours again, so the cube detector finds the red cube.',
+      setup: () => ({ armcam: { params: { auto_white_balance: false, white_balance_temperature: 2800 } }, demo: true, park: 'red' }),
+      check: (sim, st) => ({ items: [['The cube detector finds the red cube', st.detRed >= 10], ['The demo picks up a cube', st.grasp >= 1]] }),
+      hints: ['Look at the picture: Vision tab, `/arm_camera/image_raw`. Click the red cube: what hue does it have now?', 'Camera settings are parameters, read when the driver starts: `ros2 param list /arm_camera`, and the camera\'s start-up lines in the robot log.', 'Restart the camera with automatic white balance: `ros2 run usb_cam usb_cam_node_exe --ros-args -p auto_white_balance:=true`'],
+      fix: 'ros2 run usb_cam usb_cam_node_exe --ros-args -p auto_white_balance:=true',
+      debrief: "With automatic white balance off and the colour temperature fixed at 2800 K (warm stage light), the camera corrected for orange light that wasn't there, and the whole picture turned blue: the red cube looked purple and the green one teal, so colour thresholds made for normal light found nothing. Colour vision is only as good as the camera's settings. Fix exposure and white balance for the light you work in, or leave them automatic, and look at the picture first when detection fails.",
+    },
+    {
+      id: 'joint-states', title: 'The arm vanished from TF', level: 2, xp: 70, skills: ['TF', 'remapping'], from: 'Ines',
+      report: "The cube detector keeps saying it can't transform from `arm_camera_optical_frame` to `arm_base`, and the whole arm is missing from the TF tree. Since this morning the arm driver runs with the settings from the two-arm work cell.",
+      goal: 'Get the arm back into TF so the cube detector can place the red cube.',
+      setup: () => ({ arm: { remaps: [['joint_states', '/arm/joint_states']] }, demo: true, park: 'red' }),
+      check: (sim, st) => ({ items: [['`link6` is in the TF tree', !!sim.lookup('arm_base', 'link6')], ['The cube detector places the red cube', st.detRed >= 10]] }),
+      hints: ['Which arm frames exist? `ros2 run tf2_ros tf2_echo arm_base link6`', 'robot_state_publisher makes the arm\'s frames from `/joint_states`. Are the arm joints in it? `ros2 topic echo /joint_states --once`, then `ros2 topic list`', 'Feed the arm joints to it: `ros2 run topic_tools relay /arm/joint_states /joint_states`, or restart the arm driver without the remap.'],
+      fix: 'ros2 run topic_tools relay /arm/joint_states /joint_states',
+      debrief: "robot_state_publisher turns joint positions into TF frames, but only for joints it hears about on `/joint_states`. The arm driver had been remapped to `/arm/joint_states` (in the two-arm cell, a joint_state_publisher merged both arms into one topic), so the arm's links fell out of TF while the base stayed. The detector then couldn't place anything it saw through the camera on the gripper. If frames go missing, check `ros2 topic echo /joint_states` for the joint names you expect.",
+    },
+    {
+      id: 'ref-frame', title: 'Out of reach?', level: 3, xp: 90, skills: ['frames', 'parameters'], from: 'Ben',
+      report: "The demo parks at the table, but the arm won't look down: the driver says there is no IK solution for a pose that worked fine yesterday. Someone changed the arm driver so that goals could be given relative to the middle of the robot.",
+      goal: 'Make the arm go where the demo asks, so it picks up a cube.',
+      setup: () => ({ arm: { params: { reference_frame: 'base_link' } }, demo: true, park: 'red' }),
+      check: (sim, st) => ({ items: [['The demo picks up a cube', st.grasp >= 1]] }),
+      hints: ['Compare a goal the demo sends (`ros2 topic echo /arm/coords_goal`) with where the gripper ends up (`ros2 topic echo /arm/coords`).', 'A position only means something with its frame. `ros2 param get /arm_driver reference_frame`. Where is `base_link` from `arm_base`? `ros2 run tf2_ros tf2_echo arm_base base_link`', 'The demo sends its goals in the arm\'s own frame: `ros2 param set /arm_driver reference_frame arm_base`'],
+      fix: 'ros2 param set /arm_driver reference_frame arm_base',
+      debrief: "The demo computes its goals in `arm_base`, the frame at the foot of the arm, but the driver read them as `base_link`, the middle of LIMO, 122 mm lower and 20 mm further back. Every goal landed 12 cm too low: the look-down pose ended up level with the arm's own base, where the gripper can't point down. A position is just three numbers until you say which frame it is in: put the frame in the message (as `PoseStamped` does), or agree on one and transform with TF.",
+    },
+    {
+      id: 'cube-size', title: 'Two metres under the table', level: 3, xp: 90, skills: ['units', 'cameras'], from: 'Ada',
+      report: "The cube detector puts the red cube about two metres below the table, and the demo gets nowhere. We changed the detector's settings for the big foam cubes at the open day.",
+      goal: 'Make the cube detector place the red cube where it really is.',
+      setup: () => ({ det: { params: { cube_size: 0.3 } }, demo: true, park: 'red' }),
+      check: (sim, st) => ({ items: [['The cube detector places the red cube within 1 cm', st.detRed >= 10], ['The demo picks up a cube', st.grasp >= 1]] }),
+      hints: ['Where does the detector put the cube? `ros2 topic echo /cube_detections`, and compare with where the gripper is: `ros2 topic echo /arm/coords`', 'One camera has no depth, so the detector works out distance from size: the further a cube is, the smaller it looks. What size does it assume? `ros2 param get /cube_detector cube_size`', 'The small cubes are 30 mm wide: `ros2 param set /cube_detector cube_size 0.03`'],
+      fix: 'ros2 param set /cube_detector cube_size 0.03',
+      debrief: "A single camera can't measure distance directly. The detector knows how wide a cube is and how many pixels wide it looks: distance = focal length × real width ÷ width in pixels. With `cube_size` at 0.3 m (the foam cubes), every distance came out ten times too large, so the cube seemed to be far below the table, out of the arm's reach. Distance from a known size is cheap and handy, but only as good as the size you assume.",
     },
   ],
 };
