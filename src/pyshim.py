@@ -222,6 +222,7 @@ Path = _mk('nav_msgs/msg', 'Path', [('header', Header), ('poses', _ListOf(PoseSt
 MapMetaData = _mk('nav_msgs/msg', 'MapMetaData', [('map_load_time', _TimeMsg), ('resolution', F), ('width', I), ('height', I), ('origin', Pose)])
 OccupancyGrid = _mk('nav_msgs/msg', 'OccupancyGrid', [('header', Header), ('info', MapMetaData), ('data', list)])
 LimoStatus = _mk('limo_msgs/msg', 'LimoStatus', [('header', Header), ('vehicle_state', I), ('control_mode', I), ('battery_voltage', F), ('error_code', I), ('motion_mode', I)])
+CubeDetection = _mk('snobots_msgs/msg', 'CubeDetection', [('header', Header), ('color', S), ('position', Point), ('yaw', F), ('size_px', F)])
 ColorDetection = _mk('snobots_msgs/msg', 'ColorDetection', [('header', Header), ('color', S), ('found', B), ('x', F), ('y', F), ('area', F)])
 MotorCmd = _mk('snobots_msgs/msg', 'MotorCmd', [('mode', I), ('q', F), ('dq', F), ('tau', F), ('kp', F), ('kd', F)])
 LowCmd = _mk('snobots_msgs/msg', 'LowCmd', [('motor_cmd', _ListOf(MotorCmd, 26))])
@@ -753,7 +754,7 @@ _module('sensor_msgs.msg', LaserScan=LaserScan, JointState=JointState, Imu=Imu, 
 _module('limo_msgs')
 _module('limo_msgs.msg', LimoStatus=LimoStatus)
 _module('snobots_msgs')
-_module('snobots_msgs.msg', ColorDetection=ColorDetection, MotorCmd=MotorCmd, LowCmd=LowCmd, MotorState=MotorState, LowState=LowState, ArmAngles=ArmAngles, ArmCoords=ArmCoords)
+_module('snobots_msgs.msg', CubeDetection=CubeDetection, ColorDetection=ColorDetection, MotorCmd=MotorCmd, LowCmd=LowCmd, MotorState=MotorState, LowState=LowState, ArmAngles=ArmAngles, ArmCoords=ArmCoords)
 _module('rcl_interfaces')
 _module('rcl_interfaces.msg', SetParametersResult=SetParametersResult, ParameterDescriptor=ParameterDescriptor)
 _rclpy = _module('rclpy', init=init, ok=ok, shutdown=shutdown, try_shutdown=try_shutdown, spin=spin, spin_once=spin_once,
