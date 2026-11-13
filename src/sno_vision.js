@@ -60,6 +60,13 @@ const SnoVision = {
   readout(sim) {
     const V = sim.vis, m = V && V.last, P = sim.visPick, el = SnoUI.root && $('.vis-pix', SnoUI.root); if (!m || !P || !el) return;
     const E = m.encoding.toLowerCase(), ch = { rgb8: 3, bgr8: 3, '8uc3': 3, rgba8: 4, bgra8: 4, '8uc4': 4, mono8: 1, '8uc1': 1 }[E];
+    // depth images (REP 118): 16UC1 holds whole millimetres, 32FC1 metres; 0 (or NaN) means no depth there
+    if (E === '16uc1' || E === 'mono16' || E === '32fc1') {
+      const d = m.data, k = P.y * m.width + P.x, dv = new DataView(d.buffer, d.byteOffset, d.byteLength), le = !m.is_bigendian;
+      const v = E === '32fc1' ? dv.getFloat32(k * 4, le) : dv.getUint16(k * 2, le), mm = E !== '32fc1';
+      el.innerHTML = `<b>x ${P.x}, y ${P.y}</b> · ${m.encoding} value <b>${mm ? v : +v.toFixed(4)}</b> · ${!(v > 0) ? 'no depth here' : mm ? `${v} mm = ${(v / 1000).toFixed(3)} m` : `${v.toFixed(3)} m`}`;
+      return;
+    }
     if (!ch) { el.textContent = `x ${P.x}, y ${P.y} · ${m.encoding} pixels cannot be read here`; return; }
     const i = (P.y * m.width + P.x) * ch, d = m.data; let rr, gg, bb;
     if (ch === 1) rr = gg = bb = d[i]; else if (E.startsWith('rgb')) { rr = d[i]; gg = d[i + 1]; bb = d[i + 2]; } else { bb = d[i]; gg = d[i + 1]; rr = d[i + 2]; }

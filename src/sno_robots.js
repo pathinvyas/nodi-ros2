@@ -11,6 +11,16 @@ const AINEX_TAGS = [
 ];
 // fixed joints that robot_state_publisher sends on /tf_static
 const AINEX_STATIC = ['torso_joint', 'camera_joint', 'camera_optical_joint', 'imu_joint', 'l_sole_joint', 'r_sole_joint'];
+// R1's head camera: the binocular depth camera's rectified colour view plus the depth it computes, registered to one
+// 320x240 pinhole image with a 90° horizontal view (the real lenses see wider, up to about 146°), 15 Hz. Depth is
+// 16UC1 in millimetres (REP 118), 0 outside 0.2 to 6 m, with stereo-like noise that grows with distance squared.
+const R1_CAM = (() => { const w = 320, h = 240, f = 160; return { w, h, f, vfov: 2 * Math.atan(h / 2 / f) / D2R, hfov: 2 * Math.atan(w / 2 / f), near: 0.01, far: 30, dmin: 0.2, dmax: 6.0, noise: 0.005 }; })();
+// fixed joints that robot_state_publisher sends on /tf_static
+const R1_STATIC = ['camera_joint', 'camera_optical_joint', 'imu_joint', 'left_sole_joint', 'right_sole_joint'];
+// the visitor: a mannequin in a violet vest (what R1's person locator looks for) who stands, or strolls a loop
+// in front of R1; vest: the bottom and top of the vest (z), r: the torso's radius
+const R1_VISITOR = { start: [2.3, 0, Math.PI], path: [[2.0, -0.85], [4.3, -0.85], [4.3, 0.85], [2.0, 0.85]], speed: 0.3, pause: 1.6, r: 0.155, vest: [0.98, 1.36], color: '#8E2BC9' };
+
 
 class AinexSim extends HumanoidSim {
   reset() { super.reset(); this.vst = { watch: 0, headT: -9, still: 0, ids: new Set(), kickT: -99, hz: false, info: false }; }
@@ -117,23 +127,7 @@ class AinexSim extends HumanoidSim {
     super.onJointCmd(m, from);
     const nd = this.bus.nodes.get(from); if (nd && nd.user && (m.name || []).some(x => x === 'head_pan' || x === 'head_tilt')) this.vst.headT = this.t;
   }
-  /* ---------- TF as published: odom -> base_link from the controller, the joints from robot_state_publisher
-     (fed by /joint_states), fixed parts from /tf_static ---------- */
-  poseOf(f, d = 0) {
-    if (!f || d > 16) return null;
-    const ctl = !!this.procs.ctl;
-    if (f === 'odom') return ctl ? K3.I() : null;
-    if (f === this.kin.root) return ctl ? this.Tr : null;
-    const st = this.staticOf(f); if (st) { const P = this.poseOf(st.parent, d + 1); return P ? K3.mul(P, st.T) : null; }
-    this._sk = this._sk || new Set(AINEX_STATIC.map(n => this.kin.J[n].child));
-    return this.kin.T[f] && !this._sk.has(f) && this.procs.rsp && ctl ? this.kin.T[f] : null;
-  }
-  frames() {
-    const out = new Set(['odom', ...this.kin.links]); this.tfStatic.forEach(m => m.forEach((v, c) => { out.add(c); out.add(v.parent); }));
-    return [...out].filter(f => this.poseOf(f));
-  }
-  lookup(a, b) { const A = this.poseOf(a), B = this.poseOf(b); return A && B ? K3.mul(K3.inv(A), B) : null; }
-  /* ---------- vision nodes, fed frame by frame by the camera ---------- */
+  /* ---------- vision nodes, fed frame by frame by the camera (TF as published: see HumanoidSim.poseOf) ---------- */
   onCamFrame(hd) {
     if (this.procs.det && this.camFeeds('/color_detector')) this.visionIn('det', hd);
     if (this.procs.ball && this.camFeeds('/ball_locator')) this.visionIn('ball', hd);
@@ -346,12 +340,110 @@ class AinexSim extends HumanoidSim {
 class R1Sim extends HumanoidSim {
   constructor(def) { super(def); this.loco = 'walk'; this.pdReset(); this.pdSel = 'left_shoulder_pitch_joint'; this.hold = 0; }
   gait() { return this.loco === 'run' ? this.H.run : this.H.gait; }
-  reset() { this.loco = 'walk'; super.reset(); }
-  setupExtra() {
-    const c = this.ctl;
-    this.bus.subscribe(c, '/lowcmd', 'snobots_msgs/msg/LowCmd', (m, from) => this.onLowCmd(m, from));
-    this.bus.advertise(c, '/lowstate', 'snobots_msgs/msg/LowState');
-    this.bus.service('/loco/set_mode', 'snobots_msgs/srv/SetMode', c, (rq) => { const r = this.setMode(String(rq.mode || '').trim().toLowerCase()); this.event('service', '/loco/set_mode'); return { success: !!r.ok, message: r.ok ? `mode is now ${this.locoStateRaw()}` : r.reason }; });
+  reset() { this.loco = 'walk'; super.reset(); this.guestReset(); this.vst = { watch: 0, headT: -9, near: 0, dist: 0, pts: 0, hz: false, info: false }; }
+  /* ---------- ROS: R1's software runs as processes that its bringup launch file starts ---------- */
+  setupRos() {
+    const B = this.bus, cam = '/head_camera', self = this;
+    this.tn = {}; this.tfStatic = new Map();
+    // the TF tree is what is actually being published; two topics are watched for the vision missions
+    B.onPublish = (node, topic, type, msg) => {
+      if (topic === '/tf_static' && msg && msg.transforms) this.noteStatic(node, msg.transforms);
+      if (topic === '/visitor_distance' && /^std_msgs\/msg\/Float(32|64)$/.test(type) && msg) this.distSeen(+msg.data, node);
+      if (topic === '/visitor_point' && type === 'geometry_msgs/msg/PointStamped' && msg) this.pointSeen(msg, node);
+    };
+    B.onRemove = (node) => { this.tfStatic.delete(node); };
+    B.topic('/tf_static', 'tf2_msgs/msg/TFMessage').latched = true;
+    // the person locator subscribes like any node but needs no pixels, so it doesn't make the camera render
+    this.camCfg = { key: 'cam', node: cam, w: R1_CAM.w, h: R1_CAM.h, f: R1_CAM.f, fps: () => this.P(cam, 'fps'), on: () => true, frame: () => String(this.P(cam, 'frame_id') || ''), internal: new Set(['/person_locator']),
+      depth: { on: () => this.P(cam, 'enable_depth') !== false, get dmin() { return +self.P(cam, 'depth_min') || R1_CAM.dmin; }, get dmax() { return +self.P(cam, 'depth_max') || R1_CAM.dmax; }, noise: R1_CAM.noise } };
+    this.fm = { on: false }; this.urdfOld = false;
+    this.restoreRobot({});
+  }
+  pkgs() { return Object.assign(super.pkgs(), { robot_state_publisher: ['robot_state_publisher'], r1_controller: ['r1_controller'], r1_camera: ['head_camera_node'], r1_vision: ['person_locator'] }); }
+  // cfg works like AinexSim.restoreRobot's: <proc>: false leaves it out, { params, remaps } changes it, died: crashes at
+  // start-up. joy starts the joystick's teleop node, follow starts the follow-me demo (an object: its parameters),
+  // lowlevel boots R1 hanging in the gantry, oldUrdf loads a description without the camera's optical frame,
+  // guest sets the visitor to 'stand' or 'stroll'.
+  restoreRobot(cfg = {}) {
+    const B = this.bus;
+    Object.keys(this.procs).forEach(k => this.stopProc(k));
+    if (this.fm.on) this.setFollow(false);
+    [...B.nodes.keys()].filter(n => n === '/teleop_panel' || /^\/(static_transform_publisher_|relay)/.test(n)).forEach(n => B.removeNode(n));
+    this._tele = null; this.keys = {}; this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' }; this.warnT = {}; this.lastWarn = ''; B.clashes.clear();
+    this.urdfOld = !!cfg.oldUrdf; if (cfg.guest) this.guestMode = cfg.guest;
+    this.launchProcs(['rsp', 'ctl', 'cam', 'loc'], cfg);
+    if (cfg.lowlevel) this.enterLow();
+    if (cfg.joy) { const st = cfg.joy === 'stamped'; this.node('/teleop_panel', 'teleop', [['publish_stamped_twist', st, 'bool']]); B.advertise('/teleop_panel', '/cmd_vel', st ? 'geometry_msgs/msg/TwistStamped' : 'geometry_msgs/msg/Twist'); }
+    if (cfg.follow) this.setFollow(true, typeof cfg.follow === 'object' ? cfg.follow : {});
+    if (SnoUI.cur === this) SnoUI.refreshTab('control');
+  }
+  procDefs() {
+    if (this._pd) return this._pd;
+    const B = this.bus, H = this.H, TF = 'tf2_msgs/msg/TFMessage', IMG = 'sensor_msgs/msg/Image', INFO = 'sensor_msgs/msg/CameraInfo', latched = { dur: 'TRANSIENT_LOCAL', depth: 1 }, cam = '/head_camera';
+    const CQ = 'qos_overrides./head_camera/color/image_raw.publisher.reliability', DQ = 'qos_overrides./head_camera/depth/image_raw.publisher.reliability', LQ = 'qos_overrides./head_camera/depth/image_raw.subscription.reliability';
+    const qosOk = (k, v) => k.startsWith('qos_overrides.') && !['reliable', 'best_effort', 'system_default'].includes(String(v)) ? `${k}: '${v}' is not a reliability (use reliable or best_effort)` : '';
+    const qos = (node, k) => this.P(node, k) === 'best_effort' ? { rel: 'BEST_EFFORT', depth: 5 } : { rel: 'RELIABLE', depth: 10 };
+    return (this._pd = {
+      rsp: { pkg: 'robot_state_publisher', exe: 'robot_state_publisher', node: '/robot_state_publisher', kind: 'description', params: () => [['publish_frequency', 20.0, 'double', [1, 100]]],
+        start: () => {
+          const n = '/robot_state_publisher', js = R1_STATIC.filter(j => !(this.urdfOld && j === 'camera_optical_joint'));
+          B.advertise(n, '/tf', TF); B.subscribe(n, '/joint_states', 'sensor_msgs/msg/JointState', () => {});
+          B.advertise(n, '/tf_static', TF, latched); this.pub(n, '/tf_static', TF, this.tfMsg(js.map(j => { const J = this.kin.J[j]; return [J.parent, J.child, J.O]; })));
+          ['base_link', 'left_hip_pitch_link', 'right_hip_pitch_link', 'waist_yaw_link', 'torso_link', 'head_link', 'camera_link'].concat(this.urdfOld ? [] : ['camera_optical_frame']).forEach(l => this.log(n, 'INFO', `got segment ${l}`));
+        } },
+      ctl: { pkg: 'r1_controller', exe: 'r1_controller', node: H.ctl, kind: 'sim', params: () => H.params, start: (rec) => this.ctlStart(rec), stop: () => this.ctlStop() },
+      // the camera driver reads its settings once at start-up, so they are read-only here: restart it to change them
+      cam: { pkg: 'r1_camera', exe: 'head_camera_node', node: cam, kind: 'driver',
+        params: () => [['camera_name', 'head_camera', 'string', null, true], ['color_width', R1_CAM.w, 'integer', null, true], ['color_height', R1_CAM.h, 'integer', null, true], ['fps', 15, 'integer', [5, 30], true], ['enable_depth', true, 'bool', null, true], ['depth_min', R1_CAM.dmin, 'double', [0.1, 1], true], ['depth_max', R1_CAM.dmax, 'double', [1, 10], true], ['frame_id', 'camera_optical_frame', 'string', null, true], [CQ, 'reliable', 'string', null, true], [DQ, 'reliable', 'string', null, true]],
+        check: (k, v) => qosOk(k, v) || ((k === 'color_width' && v !== R1_CAM.w) || (k === 'color_height' && v !== R1_CAM.h) ? `${k}: the simulated camera streams ${R1_CAM.w}x${R1_CAM.h} only` : ''),
+        crash: "terminate called after throwing an instance of 'std::runtime_error'  what():  head camera: no stereo device on USB (expected 2 video streams, found 0)",
+        start: (rec) => {
+          const n = cam, R = rec.R, dep = this.P(n, 'enable_depth') !== false; this.camLast = null; this.camDue = null;
+          this.tn.img = R('/head_camera/color/image_raw'); this.tn.info = R('/head_camera/color/camera_info'); this.tn.dimg = R('/head_camera/depth/image_raw'); this.tn.dinfo = R('/head_camera/depth/camera_info');
+          B.advertise(n, this.tn.img, IMG, qos(n, CQ)); B.advertise(n, this.tn.info, INFO);
+          if (dep) { B.advertise(n, this.tn.dimg, IMG, qos(n, DQ)); B.advertise(n, this.tn.dinfo, INFO); }
+          this.log(n, 'INFO', `opened the binocular camera: colour ${R1_CAM.w}x${R1_CAM.h} rgb8 on ${this.tn.img}`);
+          this.log(n, 'INFO', dep ? `depth ${R1_CAM.w}x${R1_CAM.h} 16UC1 (millimetres, aligned to colour) on ${this.tn.dimg}, range ${this.P(n, 'depth_min')} to ${this.P(n, 'depth_max')} m` : 'depth is disabled (enable_depth: false)');
+          this.log(n, 'INFO', `streaming at ${this.P(n, 'fps')} fps, frame_id ${this.P(n, 'frame_id')}`);
+        },
+        stop: () => { this.tn.img = this.tn.info = this.tn.dimg = this.tn.dinfo = null; this.camDue = null; } },
+      // finds people in the colour image, reads their distance from the depth image and places them with TF
+      loc: { pkg: 'r1_vision', exe: 'person_locator', node: '/person_locator', kind: 'vision',
+        params: () => [['depth_scale', 0.001, 'double', [0, 10]], ['target_frame', 'base_link', 'string'], ['max_range', 5.0, 'double', [0.5, 10]], [LQ, 'reliable', 'string', null, true]],
+        check: (k, v) => qosOk(k, v),
+        start: (rec) => {
+          const n = '/person_locator', R = rec.R; this.tn.person = R('/person_position'); this._seen = {}; this.locDT = this.t;
+          rec.un.push(B.subscribe(n, R('/head_camera/color/image_raw'), IMG, (m) => this.locIn('c', m.header)), B.subscribe(n, R('/head_camera/depth/image_raw'), IMG, (m) => this.locIn('d', m.header), qos(n, LQ)),
+            B.subscribe(n, R('/head_camera/color/camera_info'), INFO, () => {}), B.subscribe(n, '/tf', TF, () => {}), B.subscribe(n, '/tf_static', TF, () => {}, latched));
+          B.advertise(n, this.tn.person, 'geometry_msgs/msg/PointStamped');
+          this.log(n, 'INFO', `looking for people in ${R('/head_camera/color/image_raw')} with depth from ${R('/head_camera/depth/image_raw')}`);
+          this.log(n, 'INFO', `publishing ${this.tn.person} in ${this.P(n, 'target_frame')} (depth_scale ${this.P(n, 'depth_scale')})`);
+        },
+        stop: () => { this.tn.person = null; } },
+    });
+  }
+  // the motion controller bridge: commands in; joint states, IMU, odometry, the state machine and /lowstate out
+  ctlStart(rec) {
+    const c = this.ctl, B = this.bus, H = this.H;
+    this.tn.cmd = rec.R('/cmd_vel');
+    rec.un.push(this.cmdVelSub(c, this.tn.cmd));
+    rec.un.push(B.subscribe(c, '/joint_commands', 'sensor_msgs/msg/JointState', (m, from) => this.onJointCmd(m, from)));
+    rec.un.push(B.subscribe(c, H.actionTopic, 'std_msgs/msg/String', (m, from) => { const r = this.playAction(String(m.data || '').trim()); if (!r.ok) this.logWarn(r.reason); else this.event('action', { name: String(m.data).trim(), from }); }));
+    rec.un.push(B.subscribe(c, '/lowcmd', 'snobots_msgs/msg/LowCmd', (m, from) => this.onLowCmd(m, from)));
+    ['/joint_states', 'sensor_msgs/msg/JointState', '/imu', 'sensor_msgs/msg/Imu', '/odom', 'nav_msgs/msg/Odometry', '/tf', 'tf2_msgs/msg/TFMessage', H.stateTopic, 'std_msgs/msg/String', '/lowstate', 'snobots_msgs/msg/LowState'].forEach((x, i, a) => { if (i % 2 === 0) B.advertise(c, x, a[i + 1]); });
+    B.service('/reset_world', 'std_srvs/srv/Empty', c, () => { this.reset(); this.event('service', '/reset_world'); return {}; });
+    B.service('/sim/push', 'std_srvs/srv/Trigger', c, () => { this.push(1); this.event('service', '/sim/push'); return { success: true, message: 'pushed' }; });
+    B.service(H.standSrv, 'std_srvs/srv/Trigger', c, () => { const r = this.standUp(); this.event('service', H.standSrv); return { success: r.ok, message: r.ok ? 'standing up' : r.reason }; });
+    B.service('/loco/set_mode', 'snobots_msgs/srv/SetMode', c, (rq) => { const r = this.setMode(String(rq.mode || '').trim().toLowerCase()); this.event('service', '/loco/set_mode'); return { success: !!r.ok, message: r.ok ? `mode is now ${this.locoStateRaw()}` : r.reason }; });
+    this.log(c, 'INFO', 'connected to the motion controller: 26 joint motors answered');
+    this.log(c, 'INFO', `locomotion state ${this.locoStateRaw()}, listening on ${this.tn.cmd}`);
+  }
+  ctlStop() { this.tn.cmd = null; this.cmd = { vx: 0, vy: 0, wz: 0, t: -1e9, src: '', kind: '' }; }
+  publish(dt) { if (this.procs.ctl) super.publish(dt); }
+  logWarn(t) { this.lastWarn = t; if (this.procs.ctl) this.log(this.ctl, 'WARN', t); }
+  onJointCmd(m, from) {
+    super.onJointCmd(m, from);
+    const nd = this.bus.nodes.get(from); if (nd && nd.user && (m.name || []).some(x => x === 'head_yaw_joint' || x === 'head_pitch_joint')) this.vst.headT = this.t;
   }
   stateString() { return this.mode === 'act' && this.act ? 'action:' + this.act.name : this.locoStateRaw(); }
   locoStateRaw() { return this.mode === 'low' ? 'lowlevel' : this.mode === 'damp' ? 'damp' : this.mode === 'fallen' || this.mode === 'fall' ? 'fallen' : this.mode === 'getup' ? 'standing_up' : this.mode === 'manual' ? 'servo' : this.loco === 'run' ? (this.mode === 'walk' ? 'running' : 'run_ready') : (this.mode === 'walk' ? 'walking' : 'standing'); }
@@ -426,6 +518,139 @@ class R1Sim extends HumanoidSim {
   publishExtra(dt) {
     if (this.every('low', dt, 0.04)) { this.lowTick = (this.lowTick || 0) + 1; this.pub(this.ctl, '/lowstate', 'snobots_msgs/msg/LowState', { tick: this.lowTick, motor_state: this.names.map(n => ({ q: +this.q[n].toFixed(4), dq: +(this.dq[n] || 0).toFixed(3), tau_est: +(this.tau[n] || 0).toFixed(2), temperature: 32 + Math.min(40, Math.round(Math.abs(this.tau[n] || 0) / 3)) })) }); }
   }
+  /* ---------- the visitor ---------- */
+  guestReset() { const [x, y, yaw] = R1_VISITOR.start; this.guest = { x, y, yaw, wp: 0, wait: 0, ph: 0, v: 0 }; if (!this.guestMode) this.guestMode = 'stand'; }
+  guestTick(dt) {
+    const g = this.guest, V = R1_VISITOR; if (!g) return;
+    const rx = this.nav.x - g.x, ry = this.nav.y - g.y, rd = Math.hypot(rx, ry), close = rd < 0.6 && this.mode !== 'low';
+    let vx = 0, vy = 0;
+    if (close) { const k = 0.35 / (rd || 1); vx = -rx * k; vy = -ry * k; }   // a robot this close: step back
+    else if (this.guestMode === 'stroll') {
+      if (g.wait > 0) g.wait -= dt;
+      else { const [tx, ty] = V.path[g.wp], dx = tx - g.x, dy = ty - g.y, d = Math.hypot(dx, dy); if (d < 0.05) { g.wp = (g.wp + 1) % V.path.length; g.wait = V.pause; } else { const s = Math.min(V.speed, d / dt); vx = dx / d * s; vy = dy / d * s; } }
+    }
+    g.x += vx * dt; g.y += vy * dt; g.v = Math.hypot(vx, vy); g.ph += g.v * dt / 0.32 * Math.PI;
+    // face the way you walk; standing still (or backing off), look at the robot
+    const want = g.v > 0.02 && !close ? Math.atan2(vy, vx) : Math.atan2(ry, rx);
+    g.yaw += clampN(wrapPi(want - g.yaw), -2.5 * dt, 2.5 * dt);
+  }
+  // the point of the vest that faces the camera (on the torso's surface, at mid-vest height)
+  guestSurface() {
+    const g = this.guest, V = R1_VISITOR, Tc = this.kin.T.camera_link, dx = Tc[3] - g.x, dy = Tc[7] - g.y, d = Math.hypot(dx, dy) || 1;
+    return [g.x + dx / d * V.r, g.y + dy / d * V.r, (V.vest[0] + V.vest[1]) / 2];
+  }
+  // where the vest's centre lands in the picture, in [-1, 1] (x right, y down); null when it is not in view
+  guestUV() {
+    const To = this.kin.T.camera_optical_frame, C = R1_CAM, S = this.guestSurface(); if (!To) return null;
+    const p = K3.apply(K3.inv(To), S[0], S[1], S[2]); if (p[2] < 0.1) return null;
+    const u = p[0] / p[2] * C.f / (C.w / 2), v = p[1] / p[2] * C.f / (C.h / 2);
+    return Math.abs(u) <= 1 && Math.abs(v) <= 1 ? [u, v, p[2]] : null;
+  }
+  /* ---------- /person_locator, fed frame by frame by the camera ---------- */
+  onCamFrame(hd) {
+    if (!this.procs.loc) return;
+    if (this.camFeeds('/person_locator', 'img')) this.locIn('c', hd);
+    if (this.camFeeds('/person_locator', 'dimg')) this.locIn('d', hd);
+  }
+  // half of a frame (colour or depth) reaching the locator, straight from the camera or as a real image through a relay;
+  // like a message_filters synchronizer it works once both halves of the same frame have arrived
+  locIn(which, hd) {
+    const s = this._seen || (this._seen = {}); if (!hd || s[which] === hd) return; s[which] = hd;
+    if (which === 'd') this.locDT = this.t;
+    else {
+      if (this.fix) this.fix.stats.locC++;
+      if (this.t - this.locDT > 3) this.warnEvery('loc_depth', 5, '/person_locator', `No depth image on '${this.procs.loc.R('/head_camera/depth/image_raw')}' for ${Math.round(this.t - this.locDT)} s: colour frames arrive, but nobody can be placed without depth`);
+    }
+    if (s.c === s.d) this.locateTick(hd);
+  }
+  // the person's pixel and its depth become a 3D point in the image's frame, and TF moves it to target_frame
+  locateTick(hd) {
+    const n = '/person_locator'; if (!this.tn.person) return;
+    const uv = this.guestUV(); if (!uv) return;
+    const S = this.guestSurface(), p = K3.apply(K3.inv(this.kin.T.camera_optical_frame), S[0], S[1], S[2]), D = this.camCfg.depth;
+    if (p[2] < D.dmin || p[2] > D.dmax) return;   // no depth there
+    const z = Math.round(p[2] * 1000) * (+this.P(n, 'depth_scale')), maxR = +this.P(n, 'max_range') || 5;
+    if (!(z > 0) || z > maxR) { this.warnEvery('loc_range', 4, n, `person seen ${z >= 100 ? Math.round(z) : z.toFixed(2)} m away, beyond max_range (${maxR} m): ignored`); return; }
+    const q = [p[0] / p[2] * z, p[1] / p[2] * z, z];   // back-projected along the pixel's ray: x right, y down, z forward
+    const fr = hd.frame_id, tgt = String(this.P(n, 'target_frame') || 'base_link'), M = this.lookup(tgt, fr);
+    if (!M) { const miss = !this.poseOf(fr) ? fr : tgt; this.warnEvery('loc_tf', 3, n, `Could not transform the person from '${fr || '(empty)'}' to '${tgt}': "${miss || '(empty)'}" passed to lookupTransform argument ${miss === fr ? 'source_frame' : 'target_frame'} does not exist. `); return; }
+    const pt = K3.apply(M, q[0], q[1], q[2]);
+    this.pub(n, this.tn.person, 'geometry_msgs/msg/PointStamped', { header: { stamp: hd.stamp, frame_id: tgt }, point: { x: +pt[0].toFixed(4), y: +pt[1].toFixed(4), z: +pt[2].toFixed(4) } });
+    if (this.fix) { const st = this.fix.stats, Tt = tgt === 'odom' ? K3.I() : this.kin.T[tgt]; st.loc++; if (Tt) { const w = K3.apply(Tt, pt[0], pt[1], pt[2]); if (Math.hypot(w[0] - S[0], w[1] - S[1], w[2] - S[2]) < 0.1) st.locOk++; } }
+  }
+  /* ---------- the follow-me demo: /person_position in, head and walking commands out ---------- */
+  behaviors() {
+    return { 'follow_me.launch.py': { label: 'follow me', nodes: ['/follow_me'], on: () => this.fm.on, set: (on, args) => this.setFollow(on, args), hello: '[follow_me-1] [INFO] following the person on /person_position: the head looks, the feet keep follow_distance' } };
+  }
+  setFollow(on, o = {}) {
+    if (on === this.fm.on) return;
+    const B = this.bus, n = '/follow_me';
+    if (on) {
+      const p = (k, v) => o[k] != null && Number.isFinite(+o[k]) ? +o[k] : v;
+      this.node(n, 'behavior', [['follow_distance', p('follow_distance', 1.0), 'double', [0.5, 3]], ['head_kp', p('head_kp', 0.6), 'double', [-2, 2]], ['max_speed', p('max_speed', 0.3), 'double', [0.05, 0.45]]]);
+      const cv = o.remap ? String(o.remap) : '/cmd_vel';   // remap: where its walking commands go (cmd_vel:=…)
+      B.advertise(n, cv, 'geometry_msgs/msg/Twist'); B.advertise(n, '/joint_commands', 'sensor_msgs/msg/JointState');
+      this.fm = { on: true, cv, last: -9, lost: true, scan: 0, un: B.subscribe(n, '/person_position', 'geometry_msgs/msg/PointStamped', (m) => this.onPerson(m)) };
+    } else { if (this.fm.un) this.fm.un(); B.removeNode(n); this.fm = { on: false }; }
+    SnoUI.refreshTab('control');
+  }
+  onPerson(m) {
+    const F = this.fm, n = '/follow_me'; if (!F.on || !m || !m.point) return;
+    const M = this.lookup('base_link', (m.header && m.header.frame_id) || 'base_link'); if (!M) return;
+    const p = K3.apply(M, +m.point.x || 0, +m.point.y || 0, +m.point.z || 0); F.last = this.t; F.lost = false;
+    // the head turns toward the person, from where the camera looks now
+    const Mc = this.lookup('camera_link', 'base_link');
+    if (Mc) {
+      const c = K3.apply(Mc, p[0], p[1], p[2]), k = +this.P(n, 'head_kp'), J = this.kin.J;
+      const yaw = clampN(this.q.head_yaw_joint + k * Math.atan2(c[1], c[0]), J.head_yaw_joint.lo, J.head_yaw_joint.hi), pitch = clampN(this.q.head_pitch_joint - k * Math.atan2(c[2], c[0]), J.head_pitch_joint.lo, J.head_pitch_joint.hi);
+      this.pub(n, '/joint_commands', 'sensor_msgs/msg/JointState', { header: { stamp: stampNow(), frame_id: '' }, name: ['head_yaw_joint', 'head_pitch_joint'], position: [+yaw.toFixed(4), +pitch.toFixed(4)], velocity: [], effort: [] });
+    }
+    // the feet: turn to face the person, then walk until follow_distance is left
+    const d = Math.hypot(p[0], p[1]), b = Math.atan2(p[1], p[0]), D = +this.P(n, 'follow_distance'), vmax = +this.P(n, 'max_speed');
+    let vx = Math.abs(b) < 0.35 ? clampN(0.8 * (d - D), -0.1, vmax) : 0, wz = clampN(1.2 * b, -0.8, 0.8);
+    if (Math.abs(d - D) < 0.08) vx = 0; if (Math.abs(b) < 0.08) wz = 0;
+    this.pub(n, F.cv, 'geometry_msgs/msg/Twist', { linear: { x: +vx.toFixed(3), y: 0, z: 0 }, angular: { x: 0, y: 0, z: +wz.toFixed(3) } });
+  }
+  // nobody seen for a while: stop walking, then bring the head back to the middle bit by bit
+  behaviorsTick(dt) {
+    const F = this.fm; if (!F || !F.on) return;
+    if (!F.lost && this.t - F.last > 0.6) { F.lost = true; this.pub('/follow_me', F.cv, 'geometry_msgs/msg/Twist', { linear: { x: 0, y: 0, z: 0 }, angular: { x: 0, y: 0, z: 0 } }); }
+    if (F.lost && this.t - F.last > 1.2 && (F.scan -= dt) <= 0) {
+      F.scan = 0.2; const y = this.q.head_yaw_joint, pt = this.q.head_pitch_joint;
+      if (Math.abs(y) > 0.02 || Math.abs(pt) > 0.02) this.pub('/follow_me', '/joint_commands', 'sensor_msgs/msg/JointState', { header: { stamp: stampNow(), frame_id: '' }, name: ['head_yaw_joint', 'head_pitch_joint'], position: [+(y - clampN(y, -0.1, 0.1)).toFixed(4), +(pt - clampN(pt, -0.06, 0.06)).toFixed(4)], velocity: [], effort: [] });
+    }
+  }
+  /* ---------- Fix it: what the tickets measure ---------- */
+  fixStats0() { return { locC: 0, loc: 0, locOk: 0, head: 0, headRun: 0, fm: 0, falls: 0 }; }
+  fixPos() { return [this.nav.x, this.nav.y]; }
+  fixVx() { return this.v[0]; }
+  fixWalking() { return this.mode === 'stand' || this.mode === 'walk'; }
+  fixTick(st, dt, d) {
+    const src = this.cmd.src || '';
+    if (this.fm.on && this.fixWalking() && this.cmdLive(0.5) && (src === '/follow_me' || src.startsWith('/relay')) && d < 0.5) st.fm += d;
+    const uv = this.fm.on ? this.guestUV() : null;
+    if (uv && Math.abs(uv[0]) < 1 / 3 && Math.abs(uv[1]) < 1 / 3) { st.headRun += dt; st.head = Math.max(st.head, st.headRun); } else st.headRun = 0;
+  }
+  /* ---------- the vision missions, checked from the true state of the world ---------- */
+  distSeen(z, node) {
+    const nd = this.bus.nodes.get(node), uv = this.guestUV(); if (!nd || !nd.user || !uv || !Number.isFinite(z)) return;
+    if (Math.abs(z - uv[2]) <= Math.max(0.1, 0.05 * uv[2])) { this.vst.dist++; if (this.vst.dist >= 10) this.complete('v2'); }
+  }
+  pointSeen(m, node) {
+    const nd = this.bus.nodes.get(node); if (!nd || !nd.user || !m.point) return;
+    const M = this.lookup('odom', (m.header && m.header.frame_id) || ''); if (!M) return;
+    const w = K3.apply(M, +m.point.x || 0, +m.point.y || 0, +m.point.z || 0), g = this.guest, V = R1_VISITOR;
+    if (Math.hypot(w[0] - g.x, w[1] - g.y) <= V.r + 0.12 && Math.abs(w[2] - (V.vest[0] + V.vest[1]) / 2) <= 0.25) { this.vst.pts++; if (this.vst.pts >= 10) this.complete('v5'); }
+  }
+  visionTick(dt) {
+    const V = this.vst, uv = this.guestUV(), g = this.guest;
+    // v3: the visitor strolls and stays in the middle third of the picture because your node steers the head
+    if (uv && Math.abs(uv[0]) < 1 / 3 && Math.abs(uv[1]) < 1 / 3 && this.guestMode === 'stroll' && this.t - V.headT < 1 && this.camRunning()) { V.watch += dt; if (V.watch >= 5) this.complete('v3'); }
+    // v4: 0.7 to 1.4 m from the strolling visitor, with your node in charge of /cmd_vel
+    const d = Math.hypot(g.x - this.nav.x, g.y - this.nav.y), mine = this.cmd.kind === 'user' && this.t - this.cmd.t < 1;
+    if (this.guestMode === 'stroll' && mine && d >= 0.7 && d <= 1.4 && this.canMove()) { V.near += dt; if (V.near >= 10) this.complete('v4'); }
+  }
+  objStep(dt) { super.objStep(dt); if (dt > 0) this.guestTick(dt); }
   /* ---- UI ---- */
   modesUI() {
     const wrap = h('div', { class: 'r1-modes' });
@@ -467,7 +692,14 @@ class R1Sim extends HumanoidSim {
     line(2, '#F5B700', [6, 5]); line(1, '#5EF2D6');
     g.font = '12px JetBrains Mono, monospace'; g.fillStyle = '#5EF2D6'; g.fillText('q', 8, 16); g.fillStyle = '#F5B700'; g.fillText('q_des', 26, 16); g.fillStyle = 'rgba(255,255,255,.55)'; g.fillText('last 6 s', W - 70, 16);
   }
-  hudExtra() { return `<span>mode ${esc(this.locoStateRaw())}</span>`; }
+  hudExtra() { const g = this.guest, d = g ? Math.hypot(g.x - this.nav.x, g.y - this.nav.y) : 0; return `<span>mode ${esc(this.locoStateRaw())}</span><span>visitor ${d.toFixed(1)} m</span>`; }
+  extraControls(w) {
+    w.append(h('h4', { html: 'Vision <span>head camera → <code>/person_position</code></span>' }));
+    w.append(snoSwitch('Follow me', this.fm.on, (on) => { this.setFollow(on); this.event('behavior', { k: 'follow', on }); }, 'Node <code>/follow_me</code>: R1 looks at the visitor and keeps about 1 m away.'));
+    w.append(h('div', { class: 'seg-label', html: 'The visitor' }), snoSeg([['stand', 'Stand'], ['stroll', 'Stroll']], this.guestMode, (v) => { this.guestMode = v; this.event('guest', v); SnoUI.refreshTab('control'); }, 'The visitor'));
+    const rb = h('button', { class: 'btn btn-sm', html: icon('replay') + 'Reset visitor' }); rb.addEventListener('click', () => this.guestReset());
+    w.append(h('div', { class: 'row-btns', style: 'margin-top:10px' }, rb));
+  }
   missionTick(dt) {
     const s = this.stats;
     if (s.dist >= 2) this.complete('m1');
@@ -475,15 +707,24 @@ class R1Sim extends HumanoidSim {
     if (s.cliDist >= 1) this.complete('m8');
     if (s.userDist >= 1) this.complete('m9');
     if (this.pushWatch && this.t > this.pushWatch) { this.pushWatch = 0; if (['stand', 'walk', 'act', 'manual'].includes(this.mode)) this.complete('m4'); }
-    void dt;
+    this.visionTick(dt);
+    if (this.fix) SnoFix.tick(this, dt);
   }
   event(type, data) {
+    const V = this.vst;
     if (type === 'action_done' && ['dance', 'kungfu', 'wave', 'handshake', 'bow'].includes(data)) this.complete('m3');
     else if (type === 'push' && this.P(this.ctl, 'balance') !== false && data < 2) this.pushWatch = this.t + 2.5;
-    else if (type === 'fall') this.pushWatch = 0;
+    else if (type === 'fall') { this.pushWatch = 0; if (this.fix) this.fix.stats.falls++; }
     else if (type === 'damp') this.damped = true;
     else if (type === 'stood_up' && this.damped) this.complete('m5');
     else if (type === 'service' && data === '/loco/set_mode') this.complete('m6');
+    else if (type === 'cmd_vel' && data && (data.vx || data.vy || data.wz) && ['low', 'damp', 'fall', 'fallen', 'getup', 'manual'].includes(this.mode) && this.procs.ctl) this.warnEvery('mode', 4, this.ctl, `Ignoring ${this.tn.cmd || '/cmd_vel'}: R1 is in '${this.locoStateRaw()}' mode, and only walks in stand, walk or run mode. Change it with /loco/set_mode.`);
+    else if (type === 'cmd' && typeof data === 'string') {
+      const k = data.indexOf(':'), verb = data.slice(0, k), name = data.slice(k + 1);
+      if ((verb === 'hz' || verb === 'bw') && (name === this.tn.img || name === this.tn.dimg)) V.hz = true;
+      if (verb === 'echo' && (name === this.tn.info || name === this.tn.dinfo)) V.info = true;
+      if (V.hz && V.info) this.complete('v1');
+    }
   }
   buildEnv(view, T) {
     const mats = view.mats;
@@ -491,6 +732,24 @@ class R1Sim extends HumanoidSim {
     const line = (x, col) => view.world.add(snoMesh(T, { s: 'box', size: [0.07, 2.4, 0.004], xyz: [x, 0, 0.002], m: col }, mats));
     line(0, 'white'); line(3, 'yellow'); line(6, 'white');
     const pad = new T.Mesh(new T.CircleGeometry(0.6, 48), new T.MeshStandardMaterial({ color: new T.Color('#30A46C').convertSRGBToLinear(), transparent: true, opacity: 0.55, roughness: 1 })); pad.position.set(4.5, 3, 0.003); view.world.add(pad);
+    // the visitor, a mannequin: legs and arms swing from hips and shoulders as it walks
+    const vest = new T.MeshStandardMaterial({ color: new T.Color(R1_VISITOR.color).convertSRGBToLinear(), roughness: 0.8, metalness: 0 }), V = R1_VISITOR, g = new T.Group(), m = mats;
+    const limb = (x, y, z, parts) => { const p = new T.Group(); p.position.set(x, y, z); parts.forEach(v => p.add(snoMesh(T, v, m))); g.add(p); return p; };
+    this.guestLegs = [0.09, -0.09].map(y => limb(0, y, 0.88, [{ s: 'cap', size: [0.065, 0.66], ax: 'z', xyz: [0, 0, -0.4], m: 'navy' }, { s: 'box', size: [0.24, 0.1, 0.09], xyz: [0.05, 0, -0.835], m: 'dark' }]));
+    g.add(snoMesh(T, { s: 'box', size: [0.24, 0.32, 0.16], xyz: [0, 0, 0.92], m: 'navy' }, m));
+    g.add(snoMesh(T, { s: 'cyl', size: [V.r, V.vest[1] - V.vest[0]], ax: 'z', xyz: [0, 0, (V.vest[0] + V.vest[1]) / 2], m: vest }, m));
+    g.add(snoMesh(T, { s: 'cap', size: [0.075, 0.3], ax: 'y', xyz: [0, 0, 1.39], m: vest }, m));
+    this.guestArms = [0.215, -0.215].map(y => limb(0, y, 1.39, [{ s: 'cap', size: [0.045, 0.5], ax: 'z', xyz: [0, 0, -0.3], m: 'grey' }]));
+    g.add(snoMesh(T, { s: 'cyl', size: [0.045, 0.1], ax: 'z', xyz: [0, 0, 1.48], m: 'grey' }, m));
+    g.add(snoMesh(T, { s: 'sph', size: [0.105], xyz: [0, 0, 1.6], m: 'grey' }, m));
+    g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    view.world.add(g); this.guestMesh = g;
+    this.camCap = view.addCamera(this.model.links.camera_link, R1_CAM);
   }
-  syncEnv() { }
+  syncEnv() {
+    const g = this.guest, M = this.guestMesh; if (!g || !M) return;
+    M.position.set(g.x, g.y, 0); M.rotation.z = g.yaw;
+    const a = Math.sin(g.ph) * Math.min(1, g.v / 0.15) * 0.42;
+    this.guestLegs[0].rotation.y = a; this.guestLegs[1].rotation.y = -a; this.guestArms[0].rotation.y = -a * 0.8; this.guestArms[1].rotation.y = a * 0.8;
+  }
 }

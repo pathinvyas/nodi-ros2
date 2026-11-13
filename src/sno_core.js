@@ -236,6 +236,39 @@ class SnoView {
     for (let y = 0; y < H; y++) { let i = (H - 1 - y) * W * 4, o = y * W * 3; for (let x = 0; x < W; x++, i += 4, o += 3) { out[o] = src[i]; out[o + 1] = src[i + 1]; out[o + 2] = src[i + 2]; } }
     return out;
   }
+  // the same camera as a depth sensor (REP 118): z along the optical axis in millimetres, 0 where nothing is in range.
+  // o: { dmin, dmax (metres), noise (relative error per metre of depth: stereo error grows with z²) }
+  captureDepth(C, o) {
+    const r = this.r; if (!r || !this.ready) return null;
+    const T = this.T, dm = this.depthMmMat(), sc = this.scene;
+    if (!C.drt) { C.drt = new T.WebGLRenderTarget(C.w, C.h, { minFilter: T.NearestFilter, magFilter: T.NearestFilter, format: T.RGBAFormat }); C.dpx = new Uint8Array(C.w * C.h * 4); }
+    dm.uniforms.uNear.value = o.dmin; dm.uniforms.uFar.value = o.dmax; dm.uniforms.uNoise.value = o.noise || 0; dm.uniforms.uSeed.value = (this._seed = ((this._seed || 0) + 7.31) % 97);
+    const prev = r.getRenderTarget(), sh = r.shadowMap.autoUpdate, gv = this.grid ? this.grid.visible : false, bg = sc.background, fog = sc.fog, cc = r.getClearColor(new T.Color()), ca = r.getClearAlpha();
+    this.helpers.visible = false; if (this.grid) this.grid.visible = false; r.shadowMap.autoUpdate = false; sc.background = null; sc.fog = null; sc.overrideMaterial = dm; r.setClearColor(0x000000, 0);
+    try { r.setRenderTarget(C.drt); r.setScissorTest(false); r.clear(); r.render(sc, C.cam); r.readRenderTargetPixels(C.drt, 0, 0, C.w, C.h, C.dpx); }
+    finally { r.setRenderTarget(prev); r.shadowMap.autoUpdate = sh; this.helpers.visible = true; if (this.grid) this.grid.visible = gv; sc.background = bg; sc.fog = fog; sc.overrideMaterial = null; r.setClearColor(cc, ca); }
+    const W = C.w, H = C.h, src = C.dpx, out = new Uint16Array(W * H);
+    for (let y = 0; y < H; y++) { let i = (H - 1 - y) * W * 4, k = y * W; for (let x = 0; x < W; x++, i += 4, k++) out[k] = (src[i] << 8) | src[i + 1]; }
+    return out;
+  }
+  // depth in mm, split over two 8-bit channels (high byte in red, low byte in green); no tone mapping or colour space
+  depthMmMat() {
+    if (this._dmm) return this._dmm;
+    const T = this.T;
+    this._dmm = new T.ShaderMaterial({
+      uniforms: { uNear: { value: 0.2 }, uFar: { value: 6.0 }, uNoise: { value: 0 }, uSeed: { value: 0 } }, side: T.DoubleSide,
+      vertexShader: 'varying float vD; void main(){ vec4 mv = modelViewMatrix * vec4(position, 1.0); vD = -mv.z; gl_Position = projectionMatrix * mv; }',
+      fragmentShader: `uniform float uNear; uniform float uFar; uniform float uNoise; uniform float uSeed; varying float vD;
+        float rnd(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+        void main(){
+          if (vD < uNear || vD > uFar) { gl_FragColor = vec4(0.0); return; }
+          float n = rnd(gl_FragCoord.xy + uSeed) + rnd(gl_FragCoord.yx * 1.37 + uSeed * 1.71) - 1.0;
+          float mm = clamp(floor(vD * 1000.0 * (1.0 + uNoise * vD * n) + 0.5), ceil(uNear * 1000.0), floor(uFar * 1000.0)), hi = floor(mm / 256.0);
+          gl_FragColor = vec4(hi / 255.0, (mm - hi * 256.0) / 255.0, 0.0, 1.0);
+        }`,
+    });
+    return this._dmm;
+  }
   depthMat() {
     if (this._dm) return this._dm;
     const T = this.T;
@@ -603,8 +636,9 @@ class SnoSim {
   warnEvery(key, sec, node, text) { const t = (this.warnT = this.warnT || {}); if (t[key] != null && this.t - t[key] < sec) return; t[key] = this.t; this.log(node, 'WARN', text); }
   /* ---------- a camera driver: camera_info on the frame clock, images rendered only when someone wants pixels ---------- */
   // camCfg: { key (its proc), node, w, h, f (focal length, px), fps(), on(), frame(), internal (the robot's own
-  // vision nodes: they subscribe like any node but need no pixels, so they don't make the camera render) }.
-  // The driver's start() sets this.tn.img and this.tn.info (after remapping).
+  // vision nodes: they subscribe like any node but need no pixels, so they don't make the camera render),
+  // depth (optional, an RGB-D camera: { on(), dmin, dmax, noise }, depth aligned to the colour image) }.
+  // The driver's start() sets this.tn.img and this.tn.info (after remapping), and this.tn.dimg / dinfo for depth.
   camInfo(hd) {
     const C = this.camCfg, f = C.f, cx = (C.w - 1) / 2, cy = (C.h - 1) / 2;
     return { header: hd, height: C.h, width: C.w, distortion_model: 'plumb_bob', d: [0, 0, 0, 0, 0], k: [f, 0, cx, 0, f, cy, 0, 0, 1], r: [1, 0, 0, 0, 1, 0, 0, 0, 1], p: [f, 0, cx, 0, 0, f, cy, 0, 0, 0, 1, 0], binning_x: 0, binning_y: 0, roi: { x_offset: 0, y_offset: 0, height: 0, width: 0, do_rectify: false } };
@@ -616,22 +650,28 @@ class SnoSim {
     this.camLast = this.t;
     const hd = { stamp: stampNow(), frame_id: C.frame() };
     this.pub(C.node, this.tn.info, 'sensor_msgs/msg/CameraInfo', this.camInfo(hd));
+    if (this.camDepthOn()) this.pub(C.node, this.tn.dinfo, 'sensor_msgs/msg/CameraInfo', this.camInfo(hd));
     this.camDue = hd;
     this.onCamFrame(hd);
   }
   onCamFrame() { }
   camRunning() { return !!(this.camCfg && this.procs[this.camCfg.key]); }
+  camDepthOn() { const C = this.camCfg; return !!(C && C.depth && this.tn && this.tn.dimg && this.tn.dinfo && C.depth.on()); }
   cameraFrame(view) {
     const hd = this.camDue; if (!hd) return; this.camDue = null;
-    const C = this.camCfg, T = this.tn.img && this.bus.topics.get(this.tn.img);
-    if (!T || !this.camCap || ![...T.subs.keys()].some(n => !(C.internal && C.internal.has(n)))) return;
-    const data = view.capture(this.camCap); if (!data) return;
-    this.pub(C.node, this.tn.img, 'sensor_msgs/msg/Image', { header: hd, height: C.h, width: C.w, encoding: 'rgb8', is_bigendian: 0, step: C.w * 3, data });
+    const C = this.camCfg; if (!this.camCap) return;
+    const wanted = (topic) => { const T = topic && this.bus.topics.get(topic); return !!T && [...T.subs.keys()].some(n => !(C.internal && C.internal.has(n))); };
+    if (wanted(this.tn.img)) { const data = view.capture(this.camCap); if (data) this.pub(C.node, this.tn.img, 'sensor_msgs/msg/Image', { header: hd, height: C.h, width: C.w, encoding: 'rgb8', is_bigendian: 0, step: C.w * 3, data }); }
+    if (this.camDepthOn() && wanted(this.tn.dimg) && view.captureDepth) {
+      const d = view.captureDepth(this.camCap, C.depth); if (!d) return;
+      this.pub(C.node, this.tn.dimg, 'sensor_msgs/msg/Image', { header: hd, height: C.h, width: C.w, encoding: '16UC1', is_bigendian: 0, step: C.w * 2, data: new Uint8Array(d.buffer, d.byteOffset, d.byteLength) });
+    }
   }
-  // would this frame reach that subscriber? Same topic name and type, and QoS they can agree on (else DDS warns once)
-  camFeeds(node) {
-    const C = this.camCfg, B = this.bus, topic = this.tn && this.tn.img, IMG = 'sensor_msgs/msg/Image';
-    if (!C || !topic || !this.procs[C.key]) return false;
+  // would this frame reach that subscriber? Same topic name and type, and QoS they can agree on (else DDS warns once).
+  // which: 'img' for the colour image, 'dimg' for the depth image
+  camFeeds(node, which = 'img') {
+    const C = this.camCfg, B = this.bus, topic = this.tn && this.tn[which], IMG = 'sensor_msgs/msg/Image';
+    if (!C || !topic || !this.procs[C.key] || (which === 'dimg' && !this.camDepthOn())) return false;
     const T = B.topics.get(topic); if (!T || T.pubs.get(C.node) !== IMG || T.subs.get(node) !== IMG) return false;
     const bad = qosClash(T.pubQos.get(C.node), T.subQos.get(node)); if (bad) { B.clash(C.node, node, topic, bad); return false; }
     return true;

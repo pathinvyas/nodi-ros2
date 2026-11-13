@@ -25,7 +25,7 @@ function loadSims() {
     function stampNow(){return {sec:0,nanosec:0}}function stampSec(){return '0.000000000'}function zeros36(){return new Array(36).fill(0)}class TermPanel{constructor(){}}
     function snoPhysViz(){} const document=undefined; const IFACES={};\n`;
   return new Function(stub + busSrc + '\n' + simSrc + '\n' + code +
-    '\nreturn { SNO_DEFS, K3, SnoFix, FIX_TICKETS, SnoVision, ARUCO_4X4, AINEX_TAGS, AINEX_CAM, S, getXP: () => XP };')();
+    '\nreturn { SNO_DEFS, K3, SnoFix, FIX_TICKETS, SnoVision, ARUCO_4X4, AINEX_TAGS, AINEX_CAM, R1_CAM, R1_VISITOR, S, getXP: () => XP };')();
 }
 
 // Make a simulator ready to step, the way the app does when you open its page.
