@@ -17,6 +17,7 @@ function loadSims() {
   const lab = read('lab.js'), core = read('sno_core.js');
   const busSrc = lab.slice(lab.indexOf('const QOS_DEF'), lab.indexOf('const Bus = makeBus();'));
   const simSrc = core.slice(core.indexOf('class SnoSim {'), core.indexOf('/* ------------------------------ generic panels'));
+  const yamlSrc = lab.match(/function parseYaml[\s\S]*?\n}\n/)[0];   // -p name:=value is typed like YAML
   const stub = `const Sound={play(){}};const S={sno:{m:{},code:{},tpl:{},actions:{},hist:[],fix:{}},gears:0,streak:0};let XP=0;
     function save(){}function toast(){}function esc(s){return String(s)}function confetti(){}function addXP(x){XP+=x}
     function bumpStreak(){return false}function checkBadges(){}const App={renderStats(){}};
@@ -24,8 +25,8 @@ function loadSims() {
     function md(s){return String(s)}function plain(s){return String(s)}function icon(){return ''}function h(){return {}}function $(){return null}function $$(){return []}
     function stampNow(){return {sec:0,nanosec:0}}function stampSec(){return '0.000000000'}function zeros36(){return new Array(36).fill(0)}class TermPanel{constructor(){}}
     function snoPhysViz(){} const document=undefined; const IFACES={};\n`;
-  return new Function(stub + busSrc + '\n' + simSrc + '\n' + code +
-    '\nreturn { SNO_DEFS, K3, SnoFix, FIX_TICKETS, SnoVision, ARUCO_4X4, AINEX_TAGS, AINEX_CAM, R1_CAM, R1_VISITOR, S, getXP: () => XP };')();
+  return new Function(stub + yamlSrc + busSrc + '\n' + simSrc + '\n' + code +
+    '\nreturn { SNO_DEFS, K3, SnoFix, FIX_TICKETS, SnoVision, ARUCO_4X4, AINEX_TAGS, AINEX_CAM, R1_CAM, R1_VISITOR, COBOT_CAM, S, getXP: () => XP };')();
 }
 
 // Make a simulator ready to step, the way the app does when you open its page.
