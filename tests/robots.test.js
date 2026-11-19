@@ -48,13 +48,56 @@ test('AiNex steps to catch a small push', () => {
   return `${sim.walker.stepsDone} recovery steps`;
 });
 
-test('A hard push knocks AiNex over and the hoist stands it back up', () => {
-  const sim = makeSim(L, 'ainex'); steps(sim, 1);
-  sim.push(3); steps(sim, 3);
-  assert(sim.mode === 'fallen', `still ${sim.mode} after a hard push`);
-  const r = sim.standUp(); assert(r.ok, 'stand-up refused');
-  steps(sim, 5);
-  assert(sim.mode === 'stand' && deg(sim.tilt()) < 5, `after the hoist: ${sim.mode}, tilt ${deg(sim.tilt()).toFixed(1)} deg`);
+// a hard shove in a chosen direction (relative to the heading): 0 tips it onto its front, pi onto its back
+const knock = (sim, rel, s = 3) => { const a = sim.nav.yaw + rel, F = sim.H.pushDv * s * sim.rb.totalMass / 0.05; sim.pushF = [F * Math.cos(a), F * Math.sin(a), 0]; sim.pushLeft = 0.05; };
+const until = (sim, sec, cond) => { for (let t = 0; t < sec && !cond(); t += 0.25) steps(sim, 0.25); return cond(); };
+test('A hard push knocks AiNex over and it stands back up by itself, from its back and from its front', () => {
+  const out = [];
+  for (const [rel, side] of [[Math.PI, 'back'], [0, 'front']]) {
+    const sim = makeSim(L, 'ainex'), seen = []; steps(sim, 0.5);
+    const ev = sim.event.bind(sim); sim.event = (t, d) => { seen.push(t === 'getup_from' ? t + ':' + d : t); return ev(t, d); };
+    knock(sim, rel); assert(until(sim, 4, () => sim.mode === 'fallen'), `still ${sim.mode} after a hard push`);
+    assert(sim.lyingOn() === side, `lies on its ${sim.lyingOn()}, expected its ${side}`);
+    assert(until(sim, 14, () => sim.mode === 'stand' && seen.includes('stood_up')), `not up again: ${sim.mode}`);
+    steps(sim, 1.5); assert(sim.mode === 'stand' && deg(sim.tilt()) < 5, `after standing up: ${sim.mode}, tilt ${deg(sim.tilt()).toFixed(1)} deg`);
+    assert(!sim.hoist && seen.includes(side === 'front' ? 'getup_roll' : 'getup_from:back'), `it should use its own moves (${seen.filter(x => /getup/.test(x))})`);
+    out.push(`${side} ${sim.t.toFixed(1)} s`);
+  }
+  return out.join(', ');
+});
+test('AiNex stands up from its back at every heading (12 falls), at the first try', () => {
+  const firsts = [];
+  for (let k = 0; k < 12; k++) {
+    const sim = makeSim(L, 'ainex'); sim.teleport(-0.2, 0, k * Math.PI / 6); steps(sim, 0.25 + 0.04 * (k % 3));
+    let tries = 0; const ev = sim.event.bind(sim); sim.event = (t, d) => { if (t === 'act_start' && d === 'stand_up') tries++; return ev(t, d); };
+    knock(sim, Math.PI, 2.7 + 0.3 * (k % 3));
+    assert(until(sim, 16, () => sim.mode === 'stand' && tries > 0), `heading ${k * 30} deg: ${sim.mode} after ${tries} tries`);
+    firsts.push(tries);
+  }
+  assert(firsts.every(t => t === 1), `tries per fall: ${firsts}`);
+});
+test('With auto_stand_up off AiNex stays down until /stand_up is called; then it gets up on its own', () => {
+  const sim = makeSim(L, 'ainex'); steps(sim, 0.5); sim.setP(sim.ctl, 'auto_stand_up', false);
+  knock(sim, Math.PI); until(sim, 4, () => sim.mode === 'fallen'); steps(sim, 3);
+  assert(sim.mode === 'fallen', `mode ${sim.mode}`);
+  const r = sim.bus.services.get('/stand_up').handler({}); assert(r.success, JSON.stringify(r));
+  assert(until(sim, 10, () => sim.mode === 'stand'), `mode ${sim.mode}`);
+  assert(sim.bus.services.get('/stand_up').handler({}).success === false, 'a standing robot refuses to stand up again');
+});
+test('Walking into the pitch boards, AiNex stops and steps back instead of tripping (bump_reflex)', () => {
+  const run = (on) => {
+    const sim = makeSim(L, 'ainex'); sim.setP(sim.ctl, 'bump_reflex', on); sim.setP(sim.ctl, 'auto_stand_up', false);
+    sim.teleport(0.3, 0.6, Math.PI / 2); steps(sim, 0.3); let fell = false;
+    steps(sim, 6, () => { sim.teleop(0.18, 0, 0); if (sim.mode === 'fall') fell = true; });
+    return { sim, fell };
+  };
+  const off = run(false); assert(off.fell, 'without the reflex it should trip over the board');
+  const on = run(true), s = on.sim;
+  assert(!on.fell && s.bumps === 1 && s.nav.y < 0.8 && s.nav.y > 0.6, `with the reflex: fell ${on.fell}, bumps ${s.bumps}, y ${s.nav.y.toFixed(2)}`);
+  assert(s.logs.some(l => /hit something solid: stopping and stepping back/.test(l[1])), 'the controller says why it stopped');
+  const gap = 0.9 - s.nav.y; steps(s, 4, () => s.teleop(0, 0, 0.6)); steps(s, 4, () => s.teleop(0.15, 0, 0));
+  assert(s.mode !== 'fall' && s.mode !== 'fallen' && s.nav.y < 0.75, `turned away and walked on: y ${s.nav.y.toFixed(2)}, ${s.mode}`);
+  return `stopped ${(gap * 100).toFixed(0)} cm from the board`;
 });
 
 /* ---------- Unitree R1: 25 kg humanoid ---------- */

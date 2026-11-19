@@ -102,11 +102,11 @@ const FIX_TICKETS = {
       id: 'trip', title: 'AiNex trips over its own feet', level: 2, xp: 60, skills: ['parameters'], from: 'Priya',
       report: 'Someone tuned the gait so AiNex walks more quietly on the demo table. Now it stumbles and falls after a few steps. Standing and waving are fine.',
       goal: 'Walk AiNex half a metre without falling.',
-      setup: () => ({ ctl: { params: { step_height: 0.008 } } }),
+      setup: () => ({ ctl: { params: { step_height: 0.006 } } }),
       check: (sim, st) => ({ items: [[`AiNex walks 0.5 m without falling (${Math.min(st.walk, 0.5).toFixed(2)} of 0.5 m)`, st.walk >= 0.5]] }),
       hints: ['Walk a few steps (W, or the joystick) and watch the feet closely in the 3D view. What does the swinging foot do?', 'Gait settings are parameters of the walking controller: `ros2 param dump /ainex_controller`. Which one decides how high a foot lifts?', 'Lift the feet again: `ros2 param set /ainex_controller step_height 0.025`. If AiNex is lying down, press Stand up in the Control tab first.'],
       fix: 'ros2 param set /ainex_controller step_height 0.025',
-      debrief: '`step_height` had been lowered to 8 mm. The swinging foot barely left the floor, scuffed it and tripped the robot. A gait is a set of trade-offs: lower steps are quieter but leave no margin for an uneven floor or a little body sway. Change one gait parameter at a time, test on the floor, and keep the values that work in the controller\'s parameter file.',
+      debrief: '`step_height` had been lowered to 6 mm. The swinging foot barely left the floor, scuffed it and tripped the robot. A gait is a set of trade-offs: lower steps are quieter but leave no margin for an uneven floor or a little body sway. Change one gait parameter at a time, test on the floor, and keep the values that work in the controller\'s parameter file.',
     },
     {
       id: 'cam-remap', title: 'Pictures, but nobody looks', level: 2, xp: 60, skills: ['remapping', 'topics'], from: 'Kai',
