@@ -106,13 +106,14 @@ class BipedWalker {
     out[0] = x / m; out[1] = y / m; out[2] = z / m; return out;
   }
   // static balance: move the pelvis so the model CoM sits over the middle of the feet, re-solving the legs
+  // (pelvis.pitch, if given, leans the pelvis forward, as in a deep squat)
   balance(q, pelvis, feet) {
-    const P = K3.I(), c = [0, 0, 0];
+    const c = [0, 0, 0], pp = pelvis.pitch || 0, cp = Math.cos(pp), spp = Math.sin(pp);
     for (let it = 0; it < 4; it++) {
       this.comLocal(q, c);
-      const yaw = pelvis.yaw, cy = Math.cos(yaw), sy = Math.sin(yaw), mx = (feet.l.x + feet.r.x) / 2, my = (feet.l.y + feet.r.y) / 2;
-      pelvis.x = mx - (cy * c[0] - sy * c[1]); pelvis.y = my - (sy * c[0] + cy * c[1]);
-      const Pi = K3.inv(K3.fromRPY(pelvis.x, pelvis.y, pelvis.z, 0, 0, yaw));
+      const yaw = pelvis.yaw, cy = Math.cos(yaw), sy = Math.sin(yaw), mx = (feet.l.x + feet.r.x) / 2, my = (feet.l.y + feet.r.y) / 2, cx = cp * c[0] + spp * c[2];
+      pelvis.x = mx - (cy * cx - sy * c[1]); pelvis.y = my - (sy * cx + cy * c[1]);
+      const Pi = K3.inv(K3.fromRPY(pelvis.x, pelvis.y, pelvis.z, 0, pp, yaw));
       for (const s of ['l', 'r']) {
         const f = feet[s]; this.legJ[s].forEach((n, i) => { this.lq[s][i] = q[n] || 0; });
         this.ik[s].solve(this.lq[s], K3.mul(Pi, K3.fromRPY(f.x, f.y, 0, 0, 0, f.yaw)), 30);
@@ -132,6 +133,9 @@ class BipedWalker {
     this.mode = 'stand'; this.segs = null; this.steps = []; this.swing = null; this.sup = null; this.v = [0, 0, 0];
     this.yaw = Math.atan2(Math.sin(this.feet.l.yaw) + Math.sin(this.feet.r.yaw), Math.cos(this.feet.l.yaw) + Math.cos(this.feet.r.yaw));
     this.r = m; this.stepsDone = 0; this.recover = 0; this.err = [0, 0]; this.pitchCmd = 0;
+    // forget the joint velocities and torques of the last walk: finite differences against a pose from before a fall
+    // (or a get-up) would ask the servos for a violent kick on the first step
+    this.qp = {}; this.qd = {}; this.qa = {}; this.ff = {}; this.aim = {}; this.attW = 0;
   }
   // ZMP reference point on a foot: its centre, nudged toward the other foot
   zmpOn(s) { const f = this.feet[s], k = (s === 'l' ? -1 : 1) * this.g.zmpIn; return [f.x - Math.sin(f.yaw) * k + Math.cos(f.yaw) * this.g.zmpX, f.y + Math.cos(f.yaw) * k + Math.sin(f.yaw) * this.g.zmpX]; }
@@ -205,6 +209,7 @@ class BipedWalker {
     return out;
   }
   start(push) {
+    this.aim = {};   // starting from standing: plan from where the feet are
     // first swing foot: the one on the side we move toward (or away from a push)
     const v = push ? [0, 0, 0] : this.v, e = push || [v[0], v[1]];
     const lat = -Math.sin(this.yaw) * e[0] + Math.cos(this.yaw) * e[1];
@@ -215,7 +220,7 @@ class BipedWalker {
     this.plan({ stance: sw === 'l' ? 'r' : 'l', Tds: push ? this.g.Tds * 0.6 : this.g.T0, xi0: this.xm });
   }
   fillSteps(sw) {
-    const want = this.g.horizon || 3; let feet = { l: this.feet.l, r: this.feet.r };
+    const want = this.g.horizon || 3, aim = this.aim || {}; let feet = { l: aim.l || this.feet.l, r: aim.r || this.feet.r };
     this.steps.forEach(p => { feet = Object.assign({}, feet, { [p.s]: p }); sw = p.s === 'l' ? 'r' : 'l'; });
     // velocity expected at each future step (the command is ramped), so the plan already holds the speed-up
     const g = this.g, T = g.Tss + g.Tds;
@@ -291,17 +296,20 @@ class BipedWalker {
     // pelvis position so that the model CoM lands on the commanded CoM
     const co = this.cOff, cy = Math.cos(yaw), sy = Math.sin(yaw);
     // torso attitude feedback: lean the commanded pelvis against the measured tilt and tilt rate
+    // (only while walking, faded in and out over about 0.3 s: standing still, the feet hold the body and the loop would drift)
     let rollC = 0, pitchC = this.pitchCmd;
-    if (meas.pelvis && g.kAtt) {
-      const T = meas.pelvis, pr = Math.atan2(T[9], T[10]), pp = Math.asin(clampN(-T[8], -1, 1)), w = meas.omega || [0, 0, 0];
+    this.attW = approach(this.attW || 0, g.kAtt && this.mode === 'walk' ? 1 : 0, dt / 0.3);
+    if (meas.pelvis && g.kAtt && this.attW > 0) {
+      const T = meas.pelvis, pr = Math.atan2(T[9], T[10]), pp = Math.asin(clampN(-T[8], -1, 1)), w = meas.omega || [0, 0, 0], a = this.attW;
       const wr = Math.cos(yaw) * w[0] + Math.sin(yaw) * w[1], wp = -Math.sin(yaw) * w[0] + Math.cos(yaw) * w[1];
-      rollC = clampN(-g.kAtt[0] * pr - g.kAtt[1] * wr, -0.2, 0.2); pitchC += clampN(-g.kAtt[0] * pp - g.kAtt[1] * wp, -0.2, 0.2);
+      rollC = a * clampN(-g.kAtt[0] * pr - g.kAtt[1] * wr, -0.2, 0.2); pitchC += a * clampN(-g.kAtt[0] * pp - g.kAtt[1] * wp, -0.2, 0.2);
     }
     const P = K3.fromRPY(cc[0] - (cy * co[0] - sy * co[1]), cc[1] - (sy * co[0] + cy * co[1]), this.z - (this.mode === 'walk' ? g.dz : 0), rollC, pitchC, yaw);
     const Pi = K3.inv(P), q = this.q, Pm = meas.pelvis ? K3.inv(meas.pelvis) : Pi;
     for (const s of ['l', 'r']) {
       // the stance leg drives the body; a swinging foot is aimed in the world using the measured pelvis pose
-      const f = feetT[s], Ts = K3.mul(z[s] > 0.003 && this.g.worldSwing !== false ? Pm : Pi, K3.fromRPY(f.x, f.y, z[s], 0, 0, f.yaw));
+      const sw = this.g.aimLate ? this.mode === 'walk' && !!this.swing && this.swing.step.s === s && !!this.segs && !!this.segs[this.si] && this.segs[this.si].kind === 'ss' : z[s] > 0.003;
+      const f = feetT[s], Ts = K3.mul(sw && this.g.worldSwing !== false ? Pm : Pi, K3.fromRPY(f.x, f.y, z[s], 0, 0, f.yaw));
       this.ik[s].solve(this.lq[s], Ts, 2);
       this.legJ[s].forEach((n, i) => { q[n] = this.lq[s][i]; });
     }
@@ -343,6 +351,9 @@ class BipedWalker {
     // plan on from where the feet really are (they can slip or land early)
     const fp = this.footPose(p.s), fo = p.s === 'l' ? 'r' : 'l'; this.landErr = Math.hypot(fp.x - p.x, fp.y - p.y);
     this.feet[p.s] = fp; this.feet[fo] = this.footPose(fo);
+    // where the foot was meant to land: a swing leg that always overshoots a little (its momentum) would otherwise add
+    // that bit to every following step and walk faster than commanded; a real miss (a push, a slip) is planned from as is
+    (this.aim || (this.aim = {}))[p.s] = this.g.planAim && this.landErr < this.g.planAim ? { x: p.x, y: p.y, yaw: fp.yaw } : null;
     this.lastSw = p.s; this.stepsDone++; this.swing = null;
     const zp = this.zmpOn(p.s === 'l' ? 'r' : 'l'), nsw = p.s === 'l' ? 'r' : 'l';
     const want = Math.abs(this.cmd[0]) + Math.abs(this.cmd[1]) + Math.abs(this.cmd[2]) > 1e-3 || Math.hypot(this.v[0], this.v[1]) > 0.01 || Math.abs(this.v[2]) > 0.05;

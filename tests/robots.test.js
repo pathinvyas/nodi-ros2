@@ -111,12 +111,93 @@ test('R1 walks at 0.4 m/s', () => {
   return `${d.toFixed(2)} m in 5 s`;
 });
 
-test('R1 collapses in damping mode and the gantry hoists it back up', () => {
-  const sim = makeSim(L, 'r1'); steps(sim, 1);
+test('R1 walks at the speed it is told, forwards, backwards and sideways', () => {
+  const out = [];
+  for (const [vx, vy] of [[0.2, 0], [0.45, 0], [-0.15, 0], [0, 0.15]]) {
+    const sim = makeSim(L, 'r1'); steps(sim, 0.3); steps(sim, 2, () => sim.teleop(vx, vy, 0));
+    const x0 = sim.nav.x, y0 = sim.nav.y; steps(sim, 5, () => sim.teleop(vx, vy, 0));
+    const v = vx ? (sim.nav.x - x0) / 5 : (sim.nav.y - y0) / 5, want = vx || vy;
+    assert(Math.abs(v - want) < 0.05 * Math.abs(want) + 0.005, `asked for ${want} m/s, walked ${v.toFixed(3)} m/s`);
+    out.push(`${want}: ${v.toFixed(3)}`);
+  }
+  return out.join(', ');
+});
+
+test('R1 runs at full speed, and turns while running, without falling', () => {
+  const out = [];
+  for (const [vx, wz] of [[0.55, 0], [0.55, 0.8], [0.5, 1.0]]) {
+    const sim = makeSim(L, 'r1'); steps(sim, 0.3); assert(sim.setMode('run').ok, 'run refused');
+    steps(sim, 1.5, () => sim.teleop(vx, 0, wz)); const x0 = sim.nav.x;
+    let fell = false; steps(sim, 6, () => { sim.teleop(vx, 0, wz); if (sim.mode === 'fall') fell = true; });
+    assert(!fell && sim.mode === 'walk', `running ${vx} m/s, turning ${wz} rad/s: ${sim.mode}`);
+    if (!wz) { const v = (sim.nav.x - x0) / 6; assert(Math.abs(v - vx) < 0.04, `ran ${v.toFixed(3)} m/s, asked for ${vx}`); out.push(`${v.toFixed(2)} m/s`); }
+  }
+  return out.join(', ');
+});
+
+test('R1 collapses in damping mode and stands back up by itself (no gantry)', () => {
+  const sim = makeSim(L, 'r1'), seen = []; steps(sim, 1);
+  const ev = sim.event.bind(sim); sim.event = (t, d) => { seen.push(t === 'getup_from' ? t + ':' + d : t); return ev(t, d); };
   assert(sim.setMode('damp').ok, 'damp refused'); steps(sim, 3);
   assert(sim.Tr[11] < 0.4, `pelvis still at ${sim.Tr[11].toFixed(2)} m`);
-  assert(sim.setMode('stand').ok, 'stand refused'); steps(sim, 5);
+  steps(sim, 2); assert(sim.mode === 'damp', `damp should wait for Stand, not get up by itself: ${sim.mode}`);
+  assert(sim.setMode('stand').ok, 'stand refused'); let hoisted = false;
+  assert(until(sim, 12, () => { hoisted = hoisted || !!sim.hoist; return sim.mode === 'stand'; }), `not up again: ${sim.mode}`);
+  steps(sim, 1.5);
   assert(sim.Tr[11] > 0.6 && deg(sim.tilt()) < 10, `pelvis at ${sim.Tr[11].toFixed(2)} m, tilt ${deg(sim.tilt()).toFixed(1)} deg`);
+  assert(!hoisted && seen.includes('getup_from:back') && sim.done('m5'), `own moves ${!hoisted}, ${seen.filter(x => /getup/.test(x))}, m5 ${sim.done('m5')}`);
+  return `stood up ${(sim.t - 7.5).toFixed(1)} s after Stand`;
+});
+
+test('R1 knocked over in 12 directions, standing, walking or running, stands up by itself at the first try', () => {
+  const out = { back: 0, front: 0, side: 0 };
+  for (let k = 0; k < 12; k++) {
+    const sim = makeSim(L, 'r1'), mode = ['stand', 'walk', 'run'][k % 3]; sim.teleport(0, 0, k * 0.7); steps(sim, 0.4);
+    if (mode !== 'stand') { if (mode === 'run') sim.setMode('run'); steps(sim, 1.4, () => sim.teleop(mode === 'run' ? 0.5 : 0.35, 0, k % 2 ? 0.3 : 0)); }
+    let tries = 0, hoisted = false; const ev = sim.event.bind(sim); sim.event = (t, d) => { if (t === 'act_start' && d === 'stand_up') tries++; return ev(t, d); };
+    knock(sim, k * Math.PI / 6 + 0.13, 2.2 + 0.25 * (k % 6)); sim.teleop(0, 0, 0);
+    assert(until(sim, 6, () => sim.mode === 'fallen'), `direction ${k * 30} deg (${mode}): ${sim.mode} after the push`);
+    out[sim.lyingOn()]++;
+    assert(until(sim, 20, () => { hoisted = hoisted || !!sim.hoist; return sim.mode === 'stand' && tries > 0; }), `direction ${k * 30} deg (${mode}): ${sim.mode} after ${tries} tries`);
+    steps(sim, 1.5); assert(sim.mode === 'stand' && deg(sim.tilt()) < 8 && tries === 1 && !hoisted, `direction ${k * 30} deg: ${sim.mode}, tilt ${deg(sim.tilt()).toFixed(1)}, ${tries} tries, hoist ${hoisted}`);
+  }
+  return `lay on its back ${out.back}x, front ${out.front}x, side ${out.side}x`;
+});
+
+test('Pushed onto its front, R1 pushes up, brings its knees under and stands (no roll over its head)', () => {
+  const out = [];
+  for (const s of [3.2, 3.3, 3.4]) {
+    const sim = makeSim(L, 'r1'), seen = []; steps(sim, 0.5);
+    const ev = sim.event.bind(sim); sim.event = (t, d) => { seen.push(t === 'getup_from' ? t + ':' + d : t); return ev(t, d); };
+    knock(sim, 0, s); assert(until(sim, 6, () => sim.mode === 'fallen') && sim.lyingOn() === 'front', `push ${s}: lies on its ${sim.lyingOn()}`);
+    const t0 = sim.t; let maxTilt = 0;
+    assert(until(sim, 15, () => { if (sim.gu && sim.gu.phase === 'front') maxTilt = Math.max(maxTilt, deg(sim.tilt())); return sim.mode === 'stand'; }), `not up: ${sim.mode}`);
+    assert(seen.includes('getup_from:front') && !seen.includes('getup_roll') && maxTilt < 135, `events ${seen.filter(x => /getup/.test(x))}, tilted ${maxTilt.toFixed(0)} deg`);
+    out.push(`${(sim.t - t0).toFixed(1)} s`);
+  }
+  return out.join(', ');
+});
+
+test('R1 lying on its side (left or right) tips over first, then stands up', () => {
+  for (const sg of [1, -1]) {
+    const sim = makeSim(L, 'r1'), seen = []; steps(sim, 0.2);
+    const ev = sim.event.bind(sim); sim.event = (t, d) => { seen.push(t === 'getup_from' ? t + ':' + d : t); return ev(t, d); };
+    const a = -sg * Math.PI / 4; sim.rb.setPose([0, 0, 0.26], [Math.sin(a), 0, 0, Math.cos(a)]); sim.rb.zeroVel(); sim.startFall();
+    assert(until(sim, 6, () => sim.mode === 'fallen') && sim.lyingOn() === 'side', `lies on its ${sim.lyingOn()} (${sim.mode})`);
+    assert(until(sim, 25, () => sim.mode === 'stand'), `not up: ${sim.mode}`);
+    steps(sim, 1.5); assert(sim.mode === 'stand' && deg(sim.tilt()) < 5, `${sim.mode}, tilt ${deg(sim.tilt()).toFixed(1)} deg`);
+    assert(seen.includes('getup_tip') && seen.filter(x => x === 'fall').length === 1, `events: ${seen.filter(x => /getup|fall/.test(x))}`);
+    assert(sim.logs.some(l => /lying on its side: tipping over first/.test(l[1])), 'the controller says what it does');
+  }
+});
+
+test('With auto_stand_up off R1 stays down until /loco/stand_up is called', () => {
+  const sim = makeSim(L, 'r1'); steps(sim, 0.5); sim.setP(sim.ctl, 'auto_stand_up', false);
+  knock(sim, Math.PI); until(sim, 5, () => sim.mode === 'fallen'); steps(sim, 3);
+  assert(sim.mode === 'fallen' && sim.locoStateRaw() === 'fallen', `mode ${sim.mode}`);
+  assert(sim.logs.some(l => /fall detected .* Call \/loco\/stand_up/.test(l[1])), 'the controller says how to get up');
+  const r = sim.bus.services.get('/loco/stand_up').handler({}); assert(r.success, JSON.stringify(r));
+  assert(until(sim, 12, () => sim.mode === 'stand'), `mode ${sim.mode}`);
 });
 
 test('R1 low-level mode: a PD command holds a shoulder joint on the gantry', () => {
@@ -126,6 +207,18 @@ test('R1 low-level mode: a PD command holds a shoulder joint on the gantry', () 
   const err = Math.abs(sim.q[j] + 1.2);
   assert(err < 0.12, `joint at ${sim.q[j].toFixed(3)} rad, target -1.2`);
   return `error ${deg(err).toFixed(1)} deg`;
+});
+
+test('Out of low-level mode the gantry waits until R1 hangs still, then sets it down standing (even after a long hang)', () => {
+  const out = [];
+  for (const hang of [1, 3, 9]) {
+    const sim = makeSim(L, 'r1'); steps(sim, 1); sim.setMode('low'); steps(sim, hang);
+    assert(sim.setMode('walk').ok, 'walk refused'); let fell = false;
+    steps(sim, 6, () => { if (sim.mode === 'fall') fell = true; });
+    assert(!fell && sim.mode === 'stand' && deg(sim.tilt()) < 3, `after hanging ${hang} s: ${sim.mode}, fell ${fell}, tilt ${deg(sim.tilt()).toFixed(1)} deg`);
+    out.push(`${hang} s`);
+  }
+  return `set down standing after hanging ${out.join(', ')}`;
 });
 
 /* ---------- AgileX LIMO: four wheel modes ---------- */

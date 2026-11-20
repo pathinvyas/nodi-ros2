@@ -144,7 +144,75 @@ function huR1() {
   add({ name: 'camera_joint', parent: 'head_link', child: 'camera_link', type: 'fixed', xyz: [0.066, 0, 0.068] });
   add({ name: 'camera_optical_joint', parent: 'camera_link', child: 'camera_optical_frame', type: 'fixed', rpy: [-Math.PI / 2, 0, -Math.PI / 2] });
   add({ name: 'imu_joint', parent: 'base_link', child: 'imu_link', type: 'fixed', xyz: [0, 0, 0] });
+  huR1Look(V);
   return { root: 'base_link', joints: J, visuals: V, masses: M };
+}
+// R1's look: smooth light shells over dark joint motors, a glossy black face with the binocular camera behind it and a
+// light ring on each side of the head, mitten hands, and the ankle motors' push rods behind the shins. As for AiNex,
+// the simple shapes above stay as invisible stand-ins that give each link its mass; these parts only change the look.
+function huR1Look(V) {
+  for (const k in V) V[k].forEach(v => { v.ghost = true; });
+  const add = (link, ...vs) => { (V[link] = V[link] || []).push(...vs.map(v => Object.assign({ massless: true, noColl: true }, v))); };
+  const cap = (xyz, ax, r, h = 0.006, m = 'metal') => ({ s: 'cyl', size: [r, h], ax, xyz, m });
+  add('base_link',
+    { s: 'box', size: [0.135, 0.215, 0.07], xyz: [-0.004, 0, -0.008], m: 'shell', round: 0.03 },
+    { s: 'box', size: [0.11, 0.17, 0.03], xyz: [0, 0, -0.044], m: 'servo', round: 0.01 },
+    { s: 'box', size: [0.004, 0.11, 0.008], xyz: [0.0635, 0, 0.006], m: 'grey', round: 0.002 });
+  add('waist_yaw_link', { s: 'cyl', size: [0.057, 0.032], ax: 'z', xyz: [0, 0, 0.002], m: 'servo' }, cap([0, 0, 0.019], 'z', 0.05, 0.004));
+  add('torso_link',
+    { s: 'cyl', size: [0.044, 0.13], ax: 'y', xyz: [0, 0, 0], m: 'servo' }, cap([0, 0.066, 0], 'y', 0.032), cap([0, -0.066, 0], 'y', 0.032),
+    { s: 'box', size: [0.105, 0.155, 0.075], xyz: [-0.004, 0, 0.055], m: 'dark', round: 0.03 },
+    { s: 'box', size: [0.152, 0.232, 0.165], xyz: [-0.004, 0, 0.172], m: 'shell', round: 0.05 },
+    { s: 'box', size: [0.118, 0.29, 0.068], xyz: [-0.008, 0, 0.236], m: 'shell', round: 0.032 },
+    { s: 'box', size: [0.004, 0.13, 0.004], xyz: [0.0735, 0, 0.21], m: 'grey', round: 0.0015 },
+    { s: 'cyl', size: [0.0045, 0.003], ax: 'x', xyz: [0.075, 0.05, 0.222], m: 'glow' },
+    { s: 'box', size: [0.046, 0.168, 0.158], xyz: [-0.094, 0, 0.165], m: 'grey', round: 0.02 },
+    ...[0.12, 0.14, 0.16, 0.18, 0.2].map(z => ({ s: 'box', size: [0.003, 0.11, 0.006], xyz: [-0.1175, 0, z], m: 'dark', round: 0.002 })),
+    { s: 'cyl', size: [0.034, 0.03], ax: 'z', xyz: [0, 0, 0.288], m: 'servo' });
+  add('neck_link', { s: 'cyl', size: [0.027, 0.034], ax: 'z', xyz: [0, 0, 0.016], m: 'dark' });
+  add('head_link',
+    { s: 'box', size: [0.122, 0.13, 0.142], xyz: [-0.008, 0, 0.076], m: 'shell', round: 0.05 },
+    { s: 'box', size: [0.014, 0.112, 0.086], xyz: [0.054, 0, 0.07], m: 'glass', round: 0.03 },
+    ...[1, -1].flatMap(t => [cap([0.0605, t * 0.028, 0.068], 'x', 0.0115, 0.004), { s: 'cyl', size: [0.0088, 0.003], ax: 'x', xyz: [0.0622, t * 0.028, 0.068], m: 'glass' },
+      { s: 'cyl', size: [0.0032, 0.002], ax: 'x', xyz: [0.0636, t * 0.028, 0.068], m: 'glow' },
+      { s: 'cyl', size: [0.033, 0.003], ax: 'y', xyz: [-0.012, t * 0.0655, 0.078], m: 'glow' }, { s: 'cyl', size: [0.027, 0.005], ax: 'y', xyz: [-0.012, t * 0.0665, 0.078], m: 'grey' }]));
+  for (const [s, p] of [[1, 'left_'], [-1, 'right_']]) {
+    add(p + 'hip_pitch_link', { s: 'cyl', size: [0.05, 0.056], ax: 'y', xyz: [0, s * 0.012, 0], m: 'servo' }, cap([0, s * 0.042, 0], 'y', 0.035));
+    add(p + 'hip_roll_link', { s: 'cyl', size: [0.044, 0.074], ax: 'x', xyz: [0, 0, -0.004], m: 'servo' }, cap([0.039, 0, -0.004], 'x', 0.03), cap([-0.039, 0, -0.004], 'x', 0.03));
+    add(p + 'hip_yaw_link',
+      { s: 'cyl', size: [0.041, 0.04], ax: 'z', xyz: [0, 0, -0.012], m: 'servo' },
+      { s: 'box', size: [0.094, 0.088, 0.162], xyz: [0.004, 0, -0.118], m: 'shell', round: 0.034 },
+      { s: 'box', size: [0.066, 0.008, 0.11], xyz: [-0.002, -s * 0.043, -0.12], m: 'dark', round: 0.004 },
+      { s: 'box', size: [0.004, 0.008, 0.1], xyz: [0.0505, 0, -0.118], m: 'grey', round: 0.002 });
+    add(p + 'knee_link',
+      { s: 'cyl', size: [0.047, 0.08], ax: 'y', m: 'servo' }, cap([0, 0.042, 0], 'y', 0.033), cap([0, -0.042, 0], 'y', 0.033),
+      { s: 'box', size: [0.068, 0.07, 0.17], xyz: [0.01, 0, -0.128], m: 'shell', round: 0.027 },
+      { s: 'box', size: [0.046, 0.062, 0.1], xyz: [-0.03, 0, -0.08], m: 'dark', round: 0.02 },
+      cap([-0.031, 0.021, -0.19], 'z', 0.005, 0.15), cap([-0.031, -0.021, -0.19], 'z', 0.005, 0.15),
+      { s: 'box', size: [0.004, 0.008, 0.09], xyz: [0.0445, 0, -0.12], m: 'grey', round: 0.002 });
+    add(p + 'ankle_pitch_link', { s: 'cyl', size: [0.026, 0.052], ax: 'y', m: 'servo' });
+    add(p + 'ankle_roll_link',
+      { s: 'cyl', size: [0.021, 0.058], ax: 'x', m: 'servo' },
+      { s: 'box', size: [0.2, 0.084, 0.022], xyz: [0.025, 0, -0.025], m: 'dark', round: 0.01 },
+      { s: 'box', size: [0.214, 0.09, 0.012], xyz: [0.025, 0, -0.0415], m: 'rubber', round: 0.005 },
+      { s: 'box', size: [0.118, 0.072, 0.018], xyz: [0.042, 0, -0.008], m: 'shell', round: 0.009 },
+      { s: 'box', size: [0.004, 0.06, 0.006], xyz: [0.124, 0, -0.022], m: 'grey', round: 0.002 });
+    add(p + 'shoulder_pitch_link', { s: 'cyl', size: [0.043, 0.05], ax: 'y', xyz: [0, s * 0.01, 0], m: 'servo' }, cap([0, s * 0.036, 0], 'y', 0.03));
+    add(p + 'shoulder_roll_link',
+      { s: 'cyl', size: [0.037, 0.06], ax: 'x', xyz: [0, 0, -0.01], m: 'servo' },
+      { s: 'box', size: [0.084, 0.07, 0.066], xyz: [0, s * 0.008, -0.004], m: 'shell', round: 0.03 });
+    add(p + 'shoulder_yaw_link',
+      { s: 'cyl', size: [0.033, 0.012], ax: 'z', xyz: [0, 0, -0.008], m: 'servo' },
+      { s: 'box', size: [0.068, 0.066, 0.118], xyz: [0, 0, -0.077], m: 'shell', round: 0.029 });
+    add(p + 'elbow_link',
+      { s: 'cyl', size: [0.035, 0.066], ax: 'y', m: 'servo' }, cap([0, 0.034, 0], 'y', 0.024, 0.005), cap([0, -0.034, 0], 'y', 0.024, 0.005),
+      { s: 'box', size: [0.058, 0.058, 0.098], xyz: [0, 0, -0.07], m: 'shell', round: 0.025 });
+    add(p + 'wrist_roll_link',
+      { s: 'cyl', size: [0.026, 0.016], ax: 'z', xyz: [0, 0, -0.004], m: 'servo' },
+      { s: 'box', size: [0.034, 0.062, 0.07], xyz: [0, 0, -0.048], m: 'dark', round: 0.014 },
+      { s: 'box', size: [0.03, 0.058, 0.032], xyz: [0.007, 0, -0.092], m: 'dark', round: 0.012 },
+      { s: 'box', size: [0.018, 0.016, 0.04], xyz: [0.02, -s * 0.024, -0.05], m: 'dark', round: 0.007 });
+  }
 }
 
 /* ---------- physics: collision shapes (simplified like URDF collision meshes) and servo models ---------- */
@@ -362,11 +430,11 @@ class HumanoidSim extends SnoSim {
     if (this.mode === 'manual') return this.goStand();
     return { ok: false, reason: 'already standing' };
   }
-  startHoist(fromLow) {
+  startHoist() {
     const p = this.hookPos(), T = this.rb.T[0], yaw = Math.atan2(T[1] * 0 + T[4], T[0]) || 0, fwd = [T[0], T[4]], up = [T[2], T[6]];
     // heading: where the robot's front (or its head, if lying) points
     const hd = Math.abs(T[8]) > 0.7 ? Math.atan2(up[1] * Math.sign(-T[8]), up[0] * Math.sign(-T[8])) : Math.atan2(fwd[1], fwd[0]);
-    this.hoist = { t: 0, phase: fromLow ? 1 : 0, x: p[0], y: p[1], z0: p[2], yaw: Number.isFinite(hd) ? hd : yaw, ax: p[0], ay: p[1], az: p[2] };
+    this.hoist = { t: 0, phase: 0, x: p[0], y: p[1], z0: p[2], yaw: Number.isFinite(hd) ? hd : yaw, ax: p[0], ay: p[1], az: p[2] };
     this.names.forEach(n => { this.qt[n] = this.home[n]; });
     this.act = null; this.ovl = null; this.mode = 'getup'; this.event('act_start', 'stand_up'); this.gantry = null;
   }
@@ -407,7 +475,13 @@ class HumanoidSim extends SnoSim {
   onFeet() {
     const rb = this.rb, H = this.H, bl = rb.linkBody[H.sole.l], br = rb.linkBody[H.sole.r]; let tot = 0; for (let b = 0; b < rb.nb; b++) tot += rb.cfz[b];
     const Tl = rb.linkT(H.sole.l, this._fl || (this._fl = new Float64Array(12))), Tr = rb.linkT(H.sole.r, this._fr || (this._fr = new Float64Array(12)));
-    return tot > 0.7 * rb.totalMass * 9.81 && (rb.cfz[bl] + rb.cfz[br]) / tot > 0.95 && this.tilt() < 0.9 && Tl[10] > 0.85 && Tr[10] > 0.85;
+    if (!(tot > 0.7 * rb.totalMass * 9.81 && (rb.cfz[bl] + rb.cfz[br]) / tot > 0.95 && this.tilt() < 0.9 && Tl[10] > 0.85 && Tr[10] > 0.85)) return false;
+    // optionally the centre of mass, carried on by its speed, must be over the feet too, at least G.comIn metres inside
+    const G = H.getUp; if (!G || G.comIn == null) return true;
+    const c = rb.comState(this._c6 || (this._c6 = new Float64Array(6))), om = Math.sqrt(9.81 / Math.max(0.15, c[2]));
+    const mx = (Tl[3] + Tr[3]) / 2, my = (Tl[7] + Tr[7]) / 2, yaw = Math.atan2(Tl[4] + Tr[4], Tl[0] + Tr[0]), cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const ex = c[0] + c[3] / om - mx, ey = c[1] + c[4] / om - my, lx = cy * ex + sy * ey, ly = -sy * ex + cy * ey, half = Math.hypot(Tl[3] - Tr[3], Tl[7] - Tr[7]) / 2;
+    return Math.abs(lx) < H.footL / 2 - G.comIn && Math.abs(ly) < half + H.footW / 2 - G.comIn;
   }
   // first straighten out (arms by the sides, legs together), then see how it lies
   startGetUp() {
@@ -424,40 +498,47 @@ class HumanoidSim extends SnoSim {
     for (const [n, v] of Object.entries(f.q)) this.qt[n] = lerpN(g.from[n] != null ? g.from[n] : this.qt[n], v, u);
     this.servoAll(1);
     // on its feet before the moves are over: rise from here
-    if (g.phase === 'back' && g.i >= 2 && this.onFeet()) { this.riseStart(); return; }
+    const up = g.phase === 'back' || g.phase === 'front';
+    if (up && g.i >= 2 && this.onFeet()) { this.riseStart(); return; }
     if (g.t < d) return;
     g.from = Object.assign({}, this.qt); g.i++; g.t = 0;
     if (g.i < g.res.length) return;
-    if (g.phase === 'back') { this.riseStart(); return; }
+    if (up) { this.riseStart(); return; }
     // flat out (after straightening or after a roll): wait until it lies still, then from the back it stands up; from
-    // the front it tucks and rolls forward over its shoulders onto its back first
+    // the front it either pushes up and stands (G.frontUp) or first tucks and rolls forward over its shoulders onto its back
     const v = this.rb.v; g.i = g.res.length - 1; g.t = d;
     if ((Math.hypot(v[0], v[1], v[2]) > 0.3 || Math.hypot(v[3], v[4], v[5]) > 0.08) && (g.wait = (g.wait || 0) + h) < 1.5) return;
     g.wait = 0; g.i = 0; g.t = 0;
     const side = this.lyingOn(), fz = this.rb.T[0][8];
+    // on its side (R1 can rest on a shoulder and a foot): first tip over onto the front or back (G.side), at most twice
+    if (side === 'side' && G.side && (g.tips || 0) < 2) { g.tips = (g.tips || 0) + 1; g.phase = 'tip'; g.res = G.side.map(([dd, fr]) => [dd, this.resolve(fr)]); g.i = 0; this.event('getup_tip'); return; }
     if (side === 'back' || (side === 'side' && fz >= 0)) { g.phase = 'back'; g.res = G.back.map(([dd, fr]) => [dd, this.resolve(fr)]); g.i = 0; this.event('getup_from', g.rolls ? 'front' : 'back'); return; }
+    if (G.frontUp) { g.phase = 'front'; g.res = G.front.map(([dd, fr]) => [dd, this.resolve(fr)]); g.i = 0; this.event('getup_from', 'front'); return; }
     if (++g.rolls > 2) { this.getUpFailed('it could not roll onto its back'); return; }
     g.phase = 'roll'; g.res = G.front.map(([dd, fr]) => [dd, this.resolve(fr)]); g.i = 0; this.event('getup_roll');
   }
   // the sequence ends crouched on the feet; rise like a squat in reverse, keeping the centre of mass over the feet:
   // pelvis heights from the crouch to standing, each balanced with the leg IK, blended in from the crouch's joint angles
   riseStart() {
-    const g = this.gu, W = this.walker, fl = W.footPose('l'), fr = W.footPose('r'), H = this.H;
+    const g = this.gu, W = this.walker, fl = W.footPose('l'), fr = W.footPose('r'), H = this.H, G = H.getUp, T = this.rb.T[0];
     const yaw = Math.atan2(Math.sin(fl.yaw) + Math.sin(fr.yaw), Math.cos(fl.yaw) + Math.cos(fr.yaw));
-    const z0 = clampN(this.rb.T[0][11], H.standZ * 0.55, H.standZ), feet = { l: { x: fl.x, y: fl.y, yaw: fl.yaw }, r: { x: fr.x, y: fr.y, yaw: fr.yaw } };
+    const z0 = clampN(T[11], H.standZ * (G.riseZmin || 0.55), H.standZ), feet = { l: { x: fl.x, y: fl.y, yaw: fl.yaw }, r: { x: fr.x, y: fr.y, yaw: fr.yaw } };
+    // a robot whose feet are flat only with the body leaning forward (R1's ankles bend less) starts from its actual lean
+    // and waist angle, and straightens them as it rises
+    const p0 = G.lean ? clampN(-Math.asin(clampN(T[8], -1, 1)), 0, 1.2) : 0, wn = G.lean ? this.jn('wp') : null, w0 = wn ? this.q[wn] : 0;
     const path = [], q = Object.assign({}, this.home); this.legNames().forEach(n => { q[n] = this.q[n]; });
-    for (let k = 0; k <= 12; k++) { const u = smooth01(k / 12); W.balance(q, { x: 0, y: 0, z: lerpN(z0, H.standZ, u), yaw }, feet); path.push(Object.assign({}, q)); }
-    g.phase = 'rise'; g.rise = { t: 0, T: H.getUp.rise, path, q0: Object.assign({}, this.q), sup: { x: (fl.x + fr.x) / 2, y: (fl.y + fr.y) / 2, yaw } };
+    for (let k = 0; k <= 12; k++) { const u = smooth01(k / 12); if (wn) q[wn] = lerpN(w0, this.home[wn], u); W.balance(q, { x: 0, y: 0, z: lerpN(z0, H.standZ, u), yaw, pitch: lerpN(p0, 0, u) }, feet); path.push(Object.assign({}, q)); }
+    g.phase = 'rise'; g.rise = { t: 0, T: G.rise, path, q0: Object.assign({}, this.q), sup: { x: (fl.x + fr.x) / 2, y: (fl.y + fr.y) / 2, yaw } };
   }
   riseCtl(h) {
-    const g = this.gu, R = g.rise, rb = this.rb; R.t += h;
-    const u = Math.min(1, R.t / R.T) * (R.path.length - 1), k = Math.min(R.path.length - 2, Math.floor(u)), f = u - k, b = smooth01(Math.min(1, R.t / 0.3));
+    const g = this.gu, R = g.rise, rb = this.rb, G = this.H.getUp, ak = G.ankleK || [1.2, 1.0]; R.t += h;
+    const u = Math.min(1, R.t / R.T) * (R.path.length - 1), k = Math.min(R.path.length - 2, Math.floor(u)), f = u - k, b = smooth01(Math.min(1, R.t / (G.blend || 0.3)));
     for (const n of this.names) { const a = R.path[k][n], c = R.path[k + 1][n], tgt = a + (c - a) * f; this.qt[n] = lerpN(R.q0[n], tgt, b); }
     this.servoAll(1);
     // ankles push the centre of mass (its divergent component) back toward the middle of the feet
     const c = rb.comState(this._c6 || (this._c6 = new Float64Array(6))), om = this.walker.om, cy = Math.cos(R.sup.yaw), sy = Math.sin(R.sup.yaw);
     const ex = c[0] + c[3] / om - R.sup.x, ey = c[1] + c[4] / om - R.sup.y, lx = cy * ex + sy * ey, ly = -sy * ex + cy * ey;
-    for (const sd of ['L', 'R']) { rb.qt[rb.ji[this.jn(sd + '.ap')]] += clampN(1.2 * lx, -0.3, 0.3); rb.qt[rb.ji[this.jn(sd + '.ar')]] += clampN(-1.0 * ly, -0.2, 0.2); }
+    for (const sd of ['L', 'R']) { rb.qt[rb.ji[this.jn(sd + '.ap')]] += clampN(ak[0] * lx, -0.3, 0.3); rb.qt[rb.ji[this.jn(sd + '.ar')]] += clampN(-ak[1] * ly, -0.2, 0.2); }
     if (R.t >= R.T + 0.25) this.getUpDone();
   }
   getUpDone() {
@@ -637,7 +718,10 @@ class HumanoidSim extends SnoSim {
     const o = this.hoist, H = this.H, rb = this.rb, m = rb.totalMass, top = this.hookZ + H.hoistLift;
     o.t += h;
     const ph = [1.2, 1.1, 0.8];
-    if (o.t > ph[o.phase]) {
+    // lower it only once it hangs upright and calm, feet in the air (a robot that swung on the rope in low-level mode
+    // needs a moment; set down while still swinging, it lands tilted and falls over)
+    const calm = o.phase !== 0 || o.t > ph[0] + 3 || (this.tilt() < 0.05 && Math.hypot(rb.v[0], rb.v[1], rb.v[2]) < 0.2);
+    if (o.t > ph[o.phase] && calm) {
       o.t = 0; o.phase++;
       if (o.phase === 2) { this.walker.reset(Object.assign({}, this.home)); this.walker.mode = 'stand'; }
       if (o.phase > 2) { this.hoist = null; this.mode = 'stand'; this.walker.reset(Object.assign({}, this.home)); this.event('stood_up'); this.event('action_done', 'stand_up'); return; }

@@ -464,7 +464,7 @@ class R1Sim extends HumanoidSim {
     }
     if (m === 'low') { this.enterLow(); return { ok: true }; }
     if (m === 'stand' || m === 'walk') {
-      if (this.mode === 'low') { this.loco = 'walk'; this.startHoist(true); return { ok: true }; }
+      if (this.mode === 'low') { this.loco = 'walk'; this.startHoist(); return { ok: true }; }
       if (this.loco === 'run') { this.loco = 'walk'; this.armsHome(); }
       if (['damp', 'fallen', 'fall', 'manual'].includes(this.mode)) return this.standUp();
       return { ok: true };
@@ -488,7 +488,7 @@ class R1Sim extends HumanoidSim {
     if (['fallen', 'damp', 'fall'].includes(this.mode)) this.names.forEach(n => { this.pd.qd[n] = this.home[n]; });
     this.mode = 'low'; this.event('low');
   }
-  goStand() { if (this.mode === 'low') { this.startHoist(true); return { ok: true }; } return super.goStand(); }
+  goStand() { if (this.mode === 'low') { this.startHoist(); return { ok: true }; } return super.goStand(); }
   pdReset() {
     const pd = this.pd = { kp: {}, kd: {}, qd: {}, dqd: {}, tff: {}, tau: {}, tg: {} };
     this.names.forEach(n => { const leg = this.legSet.has(n), small = /wrist|head|ankle_roll/.test(n); pd.kp[n] = leg ? 80 : small ? 20 : 40; pd.kd[n] = leg ? 2.5 : small ? 0.6 : 1.2; pd.qd[n] = this.q[n] || this.home[n] || 0; pd.dqd[n] = 0; pd.tff[n] = 0; pd.tau[n] = 0; pd.tg[n] = 0; });
@@ -662,7 +662,7 @@ class R1Sim extends HumanoidSim {
     wrap.append(h('h4', { html: `Mode <span>like the robot's state machine · <code>/loco/set_mode</code></span>` }));
     const cur = this.mode === 'low' ? 'low' : this.mode === 'damp' ? 'damp' : (this.mode === 'stand' || this.mode === 'walk') ? this.loco : '';
     wrap.append(snoSeg([['damp', 'Damp', 'stop'], ['stand', 'Stand', 'arrowU'], ['walk', 'Walk', 'drive'], ['run', 'Run', 'bolt'], ['low', 'Low-level', 'sliders']], cur, (v) => { const r = this.setMode(v); if (!r.ok) toast(esc(r.reason), { mood: 'think' }); else { Sound.play('tap'); this.event('ui_mode', v); } setTimeout(() => SnoUI.refreshTab('control'), 30); SnoUI.renderTools(); }, 'R1 mode'));
-    wrap.append(h('p', { class: 'sidecap', html: { low: 'R1 hangs from the gantry and every motor runs a PD loop. Open the <b>Joints</b> tab to tune kp and kd, or publish <code>/lowcmd</code>.', damp: 'Damping mode: the motors only resist motion, so R1 slumps to the floor under gravity. Press <b>Stand</b> and the gantry hoist sets it back on its feet.' }[cur] || 'Drive with the joystick, keys or <code>/cmd_vel</code>. <b>Run</b> switches to a quicker step rhythm (in this sim up to about 0.55 m/s).' }));
+    wrap.append(h('p', { class: 'sidecap', html: { low: 'R1 hangs from the gantry and every motor runs a PD loop. Open the <b>Joints</b> tab to tune kp and kd, or publish <code>/lowcmd</code>.', damp: 'Damping mode: the motors only resist motion, so R1 slumps to the floor under gravity. Press <b>Stand</b> and it gets back up by itself.' }[cur] || 'Drive with the joystick, keys or <code>/cmd_vel</code>. <b>Run</b> switches to a quicker step rhythm (in this sim up to about 0.55 m/s).' }));
     return wrap;
   }
   pdPanel() {
@@ -719,9 +719,15 @@ class R1Sim extends HumanoidSim {
     const V = this.vst;
     if (type === 'action_done' && ['dance', 'kungfu', 'wave', 'handshake', 'bow'].includes(data)) this.complete('m3');
     else if (type === 'push' && this.P(this.ctl, 'balance') !== false && data < 2) this.pushWatch = this.t + 2.5;
-    else if (type === 'fall') { this.pushWatch = 0; if (this.fix) this.fix.stats.falls++; }
+    else if (type === 'fall') {
+      this.pushWatch = 0; if (this.fix) this.fix.stats.falls++;
+      const auto = this.P(this.ctl, 'auto_stand_up') !== false;
+      if (this.procs.ctl) this.log(this.ctl, 'WARN', `fall detected (body tilted ${Math.round(this.tilt() / D2R)}°): motors softened. ${auto ? 'Standing up by itself once it lies still (auto_stand_up)' : `Call ${this.H.standSrv} or set mode stand to get up`}`);
+    }
     else if (type === 'damp') this.damped = true;
-    else if (type === 'stood_up' && this.damped) this.complete('m5');
+    else if (type === 'getup_tip' && this.procs.ctl) this.log(this.ctl, 'INFO', 'lying on its side: tipping over first');
+    else if (type === 'getup_from' && this.procs.ctl) this.log(this.ctl, 'INFO', data === 'front' ? 'lying on its front: pushing up, knees under, then up' : 'lying on its back: sitting up, feet in, then up');
+    else if (type === 'stood_up') { if (this.procs.ctl) this.log(this.ctl, 'INFO', 'standing again'); if (this.damped) this.complete('m5'); }
     else if (type === 'service' && data === '/loco/set_mode') this.complete('m6');
     else if (type === 'cmd_vel' && data && (data.vx || data.vy || data.wz) && ['low', 'damp', 'fall', 'fallen', 'getup', 'manual'].includes(this.mode) && this.procs.ctl) this.warnEvery('mode', 4, this.ctl, `Ignoring ${this.tn.cmd || '/cmd_vel'}: R1 is in '${this.locoStateRaw()}' mode, and only walks in stand, walk or run mode. Change it with /loco/set_mode.`);
     else if (type === 'cmd' && typeof data === 'string') {
