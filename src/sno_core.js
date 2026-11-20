@@ -81,12 +81,13 @@ function snoMesh(T, v, mats) {
 function snoBuildModel(T, kin, visuals, mats) {
   const links = {}, joints = [];
   const root = new T.Group(); root.matrixAutoUpdate = false; root.userData.link = kin.root; links[kin.root] = root;
-  (visuals[kin.root] || []).forEach(v => root.add(snoMesh(T, v, mats)));
+  // a visual marked ghost only carries mass for the physics; the look is drawn by the others
+  (visuals[kin.root] || []).forEach(v => { if (!v.ghost) root.add(snoMesh(T, v, mats)); });
   for (const j of kin.order) {
     const jg = new T.Group(), xyz = j.xyz || [0, 0, 0], rpy = j.rpy || [0, 0, 0];
     jg.position.set(xyz[0], xyz[1], xyz[2]); jg.rotation.set(rpy[0], rpy[1], rpy[2], 'ZYX');
     const rg = new T.Group(); rg.userData.link = j.child; jg.add(rg); links[j.parent].add(jg); links[j.child] = rg;
-    (visuals[j.child] || []).forEach(v => rg.add(snoMesh(T, v, mats)));
+    (visuals[j.child] || []).forEach(v => { if (!v.ghost) rg.add(snoMesh(T, v, mats)); });
     if (j.type !== 'fixed') joints.push({ g: rg, ax: new T.Vector3(j.ax[0], j.ax[1], j.ax[2]), name: j.name, offset: j.offset || 0, type: j.type });
   }
   const setMat = (g, B) => { g.matrix.set(B[0], B[1], B[2], B[3], B[4], B[5], B[6], B[7], B[8], B[9], B[10], B[11], 0, 0, 0, 1); g.matrixWorldNeedsUpdate = true; };

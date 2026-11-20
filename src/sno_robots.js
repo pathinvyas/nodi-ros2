@@ -242,6 +242,8 @@ class AinexSim extends HumanoidSim {
   }
   // the hoist sets AiNex down inside the pitch, clear of the boards and the goal
   hoistSpot(x, y) { const F = AINEX_FIELD; return [clampN(x, F.x0 + 0.2, F.x1 - 0.25), clampN(y, F.y0 + 0.2, F.y1 - 0.2)]; }
+  // set down by hand, it faces into the pitch
+  rescueYaw(x, y) { const F = AINEX_FIELD; return Math.atan2(-y, (F.x0 + F.x1) / 2 - x); }
   objTick(o) {
     const F = AINEX_FIELD;
     if (o.kind === 'ball' && o.x > F.x1 + o.r && Math.abs(o.y) < F.goalY && !this.scored) {
@@ -279,9 +281,12 @@ class AinexSim extends HumanoidSim {
     else if (type === 'goal') { this.complete('m7'); if (this.t - V.kickT < 6) this.complete('v5'); }
     else if (type === 'fall') {
       this.fellOnce = true; if (this.fix) { this.fix.stats.walk = 0; this.fix.stats.falls++; }
-      if (this.procs.ctl) this.log(this.ctl, 'WARN', `fall detected (body tilted ${Math.round(this.tilt() / D2R)}°): servos softened. Call ${this.H.standSrv} to get up`);
+      const auto = this.P(this.ctl, 'auto_stand_up') !== false;
+      if (this.procs.ctl) this.log(this.ctl, 'WARN', `fall detected (body tilted ${Math.round(this.tilt() / D2R)}°): servos softened. ${auto ? 'Standing up by itself once it lies still (auto_stand_up)' : `Call ${this.H.standSrv} to get up`}`);
     }
-    else if (type === 'stood_up' && this.fellOnce) this.complete('m9');
+    else if (type === 'getup_roll' && this.procs.ctl) this.log(this.ctl, 'INFO', 'lying on its front: rolling forward onto its back first');
+    else if (type === 'getup_from' && this.procs.ctl) this.log(this.ctl, 'INFO', 'lying on its back: standing up');
+    else if (type === 'stood_up') { if (this.procs.ctl) this.log(this.ctl, 'INFO', 'standing again'); if (this.fellOnce) this.complete('m9'); }
     else if (type === 'joint_cmd' && data.kind === 'user') this.stats.userJoint++;
     else if (type === 'cmd' && typeof data === 'string') {
       const k = data.indexOf(':'), verb = data.slice(0, k), name = data.slice(k + 1);

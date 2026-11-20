@@ -89,11 +89,15 @@ test('Ticket "Head tracking ignores the red block": min_area is far too big; low
   paramSet(sim, '/color_detector', 'min_area', 0.0001);
   assert(solved(sim, 6), `still failing: ${failing(sim)}`);
 });
-test('Ticket "AiNex trips over its own feet": an 8 mm step height trips it; the default walks', () => {
+test('Ticket "AiNex trips over its own feet": a 6 mm step height trips it; the default walks', () => {
   const sim = open('trip'); steps(sim, 0.5);
   steps(sim, 5, () => sim.teleop(0.15, 0, 0)); sim.teleop(0, 0, 0); steps(sim, 1);
-  assert(['fall', 'fallen'].includes(sim.mode) && sim.fix.stats.falls >= 1 && logHas(sim, /fall detected/), `mode ${sim.mode}, falls ${sim.fix.stats.falls}`);
-  sim.standUp(); steps(sim, 4); assert(sim.mode === 'stand', `after the hoist: ${sim.mode}`);
+  assert(sim.fix.stats.falls >= 1 && logHas(sim, /fall detected/), `mode ${sim.mode}, falls ${sim.fix.stats.falls}`);
+  // it gets up by itself; if a board is in the way it gives up after three tries and waits to be set on its feet
+  for (let t = 0; t < 30 && sim.mode !== 'stand' && !sim.gaveUp; t += 0.5) steps(sim, 0.5);
+  if (sim.gaveUp) { assert(logHas(sim, /Could not stand up/), 'it says why it waits'); sim.standUp(); steps(sim, 0.5); }
+  assert(sim.mode === 'stand', `back on its feet: ${sim.mode}`);
+  sim.teleport(-0.35, 0, 0); steps(sim, 0.3);   // carry it back to the start, facing down the pitch
   paramSet(sim, '/ainex_controller', 'step_height', 0.025);
   steps(sim, 5, () => sim.teleop(0.15, 0, 0)); sim.teleop(0, 0, 0);
   assert(solved(sim, 1), `walked ${sim.fix.stats.walk.toFixed(2)} m; failing: ${failing(sim)}`);

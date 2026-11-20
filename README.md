@@ -20,6 +20,8 @@ A game-like ROS 2 course that runs entirely in the browser, in a single web page
 
 ![AiNex walking with contact forces and centre of mass shown](docs/screenshots/ainex-physics.jpg)
 
+![AiNex standing up by itself after a fall onto its back: it pushes up on its arms, swings its feet under, and rises](docs/screenshots/ainex-getup.jpg)
+
 | | |
 |---|---|
 | ![Unitree R1 in the Isaac-style scene](docs/screenshots/r1-isaac.jpg) | ![LIMO Cobot holding a cube](docs/screenshots/cobot-pick.jpg) |
@@ -32,7 +34,8 @@ The simulators run on a small rigid-body engine written for this project, in the
 - **Articulated dynamics.** Featherstone's recursive Newton–Euler algorithm gives the bias forces and the composite-rigid-body algorithm gives the mass matrix. Every link has mass and inertia.
 - **Motors.** Joints are driven by implicit PD servos with torque and speed limits, rotor armature, damping and friction, so a robot can sag, stall or fall.
 - **Contacts.** Boxes, spheres, capsules and wheels touch through soft contacts with Coulomb friction and rolling resistance. They are solved with warm-started projected Gauss–Seidel. Mecanum rollers use anisotropic friction.
-- **Walking.** The humanoids use a model-based controller: a footstep planner, a linear-inverted-pendulum / DCM centre-of-mass plan, capture-point stepping to catch pushes, and leg inverse kinematics. A virtual hoist stands them up after a fall.
+- **Walking.** The humanoids use a model-based controller: a footstep planner, a linear-inverted-pendulum / DCM centre-of-mass plan, capture-point stepping to catch pushes, and leg inverse kinematics. When a foot hits something solid (a pitch board or a goal post), AiNex stops and steps back instead of tripping (`bump_reflex`).
+- **Getting up.** After a fall AiNex stands up by itself, through the same physics: from its back it pushes up on its arms, swings its feet under and rises like a squat in reverse, keeping its centre of mass over its feet; from its front it first rolls forward onto its back. Its moves were found by an evolution-strategy search in this simulator and tested on falls from every heading. If a board or a goal blocks it three times, it waits for **Stand up** to be set on its feet by hand. R1 still uses a gantry hoist, as labs do with robots of its size.
 - **Wheels and sensors.** LIMO's `/odom` is integrated from the wheel encoders, so it drifts when the tyres slip, and SLAM or navigation publish the `map → odom` correction. The IMU and odometry have noise.
 - **Tools you'd expect from a physics sim.** Pause and single-step, slow motion, Ctrl+drag to push a robot or an object, overlays for contact forces, centre of mass and collision shapes, domain randomization (friction, mass, payload, motor strength, sensor noise), and MuJoCo-, Isaac- and classic-style scenes.
 - **Simulated time.** Python nodes in the simulators run on the simulator's clock (`use_sim_time` is true), and message stamps carry simulated seconds, so pausing the sim pauses your timers too.
@@ -61,7 +64,7 @@ AiNex's tickets are about its head camera, its vision nodes and its walking cont
 |---|---|---|
 | AiNex is blind | the camera driver crashed at start-up (`/dev/video0` was not there yet) | `ros2 node list`, `ros2 topic info`, `ros2 run` |
 | Head tracking ignores the red block | the detector's `min_area` was raised far too high | `ros2 topic echo`, `ros2 param get/set` |
-| AiNex trips over its own feet | `step_height` lowered to 8 mm, so the swinging foot scuffs the floor | gait parameters, `ros2 param dump` |
+| AiNex trips over its own feet | `step_height` lowered to 6 mm, so the swinging foot scuffs the floor | gait parameters, `ros2 param dump` |
 | Pictures, but nobody looks | the camera still has remaps from a two-robot demo | `ros2 node info`, remapping, `topic_tools relay` |
 | Echo sees pictures, the detector does not | the camera publishes best effort, the detector wants reliable | `ros2 topic info --verbose`, QoS overrides |
 | Where is the ball? | images stamped `frame_id: camera`, a frame the tree doesn't have | `header.frame_id`, optical frames, `static_transform_publisher` |
@@ -202,7 +205,7 @@ npm test
 - `tests/r1_lab.test.js` does the same for R1: its bringup, the optical frame, colour and depth `camera_info`, a depth image rendered only for real subscribers, the person locator and follow me, the strolling visitor, all seven R1 tickets with their usual fixes (and a bridge without the optical rotation that must be caught), and the five vision missions with the starter vest thresholds.
 - `tests/cobot_lab.test.js` does the same for the LIMO Cobot: its bringup, arm frames that exist only while its joint states reach `robot_state_publisher`, a gripper camera that renders only for real subscribers, the cube detector's accuracy, released servos, the demo picking by sight, all seven Cobot tickets with their usual fixes, and the five vision missions (one with odometry drift) with starter colour ranges checked against the rendered picture.
 - `tests/robots.test.js` drives the four robots:
-  - AiNex stands, walks, turns, kicks, catches a push and is stood back up after a hard one
+  - AiNex stands, walks, turns, kicks and catches a push; after a hard one it stands back up by itself from its back and from its front, waits for `/stand_up` when `auto_stand_up` is off, and stops and steps back at the pitch boards instead of tripping
   - R1 walks at 0.4 m/s, collapses in damping mode and holds a joint in low-level PD mode
   - LIMO drives in all four wheel modes, with odometry that slips against a wall
   - LIMO navigates to a goal
