@@ -22,6 +22,8 @@ A game-like ROS 2 course that runs entirely in the browser, in a single web page
 
 ![AiNex standing up by itself after a fall onto its back: it pushes up on its arms, swings its feet under, and rises](docs/screenshots/ainex-getup.jpg)
 
+![Unitree R1 standing up by itself after a fall onto its front: it pushes up, brings its knees under, tucks its toes, sits back onto its feet and rises](docs/screenshots/r1-getup.jpg)
+
 | | |
 |---|---|
 | ![Unitree R1 in the Isaac-style scene](docs/screenshots/r1-isaac.jpg) | ![LIMO Cobot holding a cube](docs/screenshots/cobot-pick.jpg) |
@@ -34,13 +36,13 @@ The simulators run on a small rigid-body engine written for this project, in the
 - **Articulated dynamics.** Featherstone's recursive Newton–Euler algorithm gives the bias forces and the composite-rigid-body algorithm gives the mass matrix. Every link has mass and inertia.
 - **Motors.** Joints are driven by implicit PD servos with torque and speed limits, rotor armature, damping and friction, so a robot can sag, stall or fall.
 - **Contacts.** Boxes, spheres, capsules and wheels touch through soft contacts with Coulomb friction and rolling resistance. They are solved with warm-started projected Gauss–Seidel. Mecanum rollers use anisotropic friction.
-- **Walking.** The humanoids use a model-based controller: a footstep planner, a linear-inverted-pendulum / DCM centre-of-mass plan, capture-point stepping to catch pushes, and leg inverse kinematics. When a foot hits something solid (a pitch board or a goal post), AiNex stops and steps back instead of tripping (`bump_reflex`).
-- **Getting up.** After a fall AiNex stands up by itself, through the same physics: from its back it pushes up on its arms, swings its feet under and rises like a squat in reverse, keeping its centre of mass over its feet; from its front it first rolls forward onto its back. Its moves were found by an evolution-strategy search in this simulator and tested on falls from every heading. If a board or a goal blocks it three times, it waits for **Stand up** to be set on its feet by hand. R1 still uses a gantry hoist, as labs do with robots of its size.
+- **Walking.** The humanoids use a model-based controller: a footstep planner, a linear-inverted-pendulum / DCM centre-of-mass plan, capture-point stepping to catch pushes, and leg inverse kinematics. When a foot hits something solid (a pitch board or a goal post), AiNex stops and steps back instead of tripping (`bump_reflex`). R1 plans each step from where the last foot was aimed, so it walks at the speed it is told, and its commanded body leans against any measured tilt, which keeps the torso steady and lets it run at full speed and turn without tipping over backwards.
+- **Getting up.** After a fall AiNex and R1 stand up by themselves, through the same physics. AiNex, from its back, pushes up on its arms, swings its feet under and rises like a squat in reverse, keeping its centre of mass over its feet; from its front it first rolls forward onto its back. R1, from its back, sits up with straight legs, pulls its feet in and rocks forward over them; from its front it pushes up, brings its knees under, tucks its toes and sits back onto its feet; lying on a side it first tips over. Its ankles bend less than AiNex's, so it rises from the deep squat leaning forward. The moves were found by an evolution-strategy search in this simulator, with the robot's own controller in the loop, and tested on falls in every direction (R1 also from damping mode). If something blocks AiNex three times, it waits for **Stand up** to be set on its feet by hand. R1 still hangs from a gantry in low-level mode, and the gantry sets it down once it hangs still.
 - **Wheels and sensors.** LIMO's `/odom` is integrated from the wheel encoders, so it drifts when the tyres slip, and SLAM or navigation publish the `map → odom` correction. The IMU and odometry have noise.
 - **Tools you'd expect from a physics sim.** Pause and single-step, slow motion, Ctrl+drag to push a robot or an object, overlays for contact forces, centre of mass and collision shapes, domain randomization (friction, mass, payload, motor strength, sensor noise), and MuJoCo-, Isaac- and classic-style scenes.
 - **Simulated time.** Python nodes in the simulators run on the simulator's clock (`use_sim_time` is true), and message stamps carry simulated seconds, so pausing the sim pauses your timers too.
 
-Honest limits: the real Unitree R1 walks with a learned (reinforcement-learning) policy, not this controller, and the topic names are simplified for teaching. Always follow the vendor documentation before running code on real hardware.
+Honest limits: the real Unitree R1 walks with a learned (reinforcement-learning) policy and has its own stand-up motions, not this controller's, and the topic names are simplified for teaching. Always follow the vendor documentation before running code on real hardware.
 
 ## Broken-robot missions
 
@@ -206,7 +208,7 @@ npm test
 - `tests/cobot_lab.test.js` does the same for the LIMO Cobot: its bringup, arm frames that exist only while its joint states reach `robot_state_publisher`, a gripper camera that renders only for real subscribers, the cube detector's accuracy, released servos, the demo picking by sight, all seven Cobot tickets with their usual fixes, and the five vision missions (one with odometry drift) with starter colour ranges checked against the rendered picture.
 - `tests/robots.test.js` drives the four robots:
   - AiNex stands, walks, turns, kicks and catches a push; after a hard one it stands back up by itself from its back and from its front, waits for `/stand_up` when `auto_stand_up` is off, and stops and steps back at the pitch boards instead of tripping
-  - R1 walks at 0.4 m/s, collapses in damping mode and holds a joint in low-level PD mode
+  - R1 walks at the speed it is told (forwards, backwards, sideways), runs at full speed and turns without falling, stands up by itself after falls in 12 directions (standing, walking or running), from its front, from either side and from damping mode, waits for `/loco/stand_up` when `auto_stand_up` is off, holds a joint in low-level PD mode, and is set down standing by the gantry even after a long, swinging hang
   - LIMO drives in all four wheel modes, with odometry that slips against a wall
   - LIMO navigates to a goal
   - the Cobot picks and sorts all three cubes
